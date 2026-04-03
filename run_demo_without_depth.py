@@ -37,6 +37,7 @@ if __name__ == "__main__":
     set_seed(0)
 
     mesh = trimesh.load(args.mesh_file)
+    mesh.apply_scale(0.001)
 
     debug = args.debug
     debug_dir = args.debug_dir
@@ -118,8 +119,8 @@ if __name__ == "__main__":
                 transparency=0,
                 is_input_rgb=True,
             )
-            cv2.imshow("1", vis[..., ::-1])
-            cv2.waitKey(1)
+            pass
+            pass
 
         if debug >= 2:
             os.makedirs(f"{debug_dir}/track_vis", exist_ok=True)

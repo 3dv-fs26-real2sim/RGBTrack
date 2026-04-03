@@ -1,7 +1,9 @@
 import torch
-import tensorrt as trt
+try:
+    import tensorrt as trt
+except ImportError:
+    trt = None
 from score_network import ScoreNetMultiPair
-print(trt.__version__)
 
 
 class RefineNetTrt(object):

@@ -350,8 +350,9 @@ class FoundationPose:
         if self.debug >= 2:
             xyz_map = depth2xyzmap(depth, K)
             valid = xyz_map[..., 2] >= 0.001
-            pcd = toOpen3dCloud(xyz_map[valid], rgb[valid])
-            o3d.io.write_point_cloud(f"{self.debug_dir}/scene_raw.ply", pcd)
+            if valid.any():
+                pcd = toOpen3dCloud(xyz_map[valid], rgb[valid])
+                o3d.io.write_point_cloud(f"{self.debug_dir}/scene_raw.ply", pcd)
             cv2.imwrite(f"{self.debug_dir}/ob_mask.png", (ob_mask * 255.0).clip(0, 255))
 
         normal_map = None
@@ -370,8 +371,9 @@ class FoundationPose:
             imageio.imwrite(f"{self.debug_dir}/color.png", rgb)
             cv2.imwrite(f"{self.debug_dir}/depth.png", (depth * 1000).astype(np.uint16))
             valid = xyz_map[..., 2] >= 0.001
-            pcd = toOpen3dCloud(xyz_map[valid], rgb[valid])
-            o3d.io.write_point_cloud(f"{self.debug_dir}/scene_complete.ply", pcd)
+            if valid.any():
+                pcd = toOpen3dCloud(xyz_map[valid], rgb[valid])
+                o3d.io.write_point_cloud(f"{self.debug_dir}/scene_complete.ply", pcd)
 
         self.H, self.W = depth.shape[:2]
         self.K = K

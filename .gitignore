@@ -1,0 +1,30 @@
+# Build artifacts
+mycpp/build/
+bundlesdf/mycuda/build/
+bundlesdf/mycuda/*.egg-info/
+bundlesdf/mycuda/*.so
+*.egg-info/
+__pycache__/
+*.pyc
+*.pyo
+
+# Weights and large files
+weights/
+*.pth
+*.onnx
+*.trt
+*.engine
+
+# Runtime outputs
+logs/
+tmp/
+debug/
+output/
+
+# Data
+data/
+*.mp4
+*.npz
+
+# XMem saves
+XMem/saves/

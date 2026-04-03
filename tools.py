@@ -10,11 +10,6 @@ from scipy.spatial import ConvexHull
 from filterpy.kalman import KalmanFilter
 
 from scipy.spatial.transform import Rotation
-from bop_toolkit_lib import pose_error
-
-
-from bop_toolkit_lib import misc
-from bop_toolkit_lib import visibility
 
 def render_rgbd(cad_model, object_pose, K, W, H):
     if type(object_pose) is np.ndarray:

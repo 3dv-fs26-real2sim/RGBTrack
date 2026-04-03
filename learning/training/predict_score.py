@@ -110,7 +110,7 @@ def make_crop_data_batch(
     B = len(ob_in_cams)
     poseAs = torch.as_tensor(ob_in_cams, dtype=torch.float, device="cuda")
 
-    bs = 512
+    bs = 64
     rgb_rs = []
     depth_rs = []
     xyz_map_rs = []
@@ -260,7 +260,7 @@ def make_crop_data_batch_depths(
     B = len(ob_in_cams)
     poseAs = torch.as_tensor(ob_in_cams, dtype=torch.float, device="cuda")
 
-    bs = 512
+    bs = 64
     rgb_rs = []
     depth_rs = []
     xyz_map_rs = []
