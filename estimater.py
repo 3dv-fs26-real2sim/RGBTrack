@@ -57,7 +57,6 @@ class FoundationPose:
             self.refiner = PoseRefinePredictor()
 
         self.pose_last = None  # Used for tracking; per the centered mesh
-        self.frames_lost = 0
 
     def reset_object(self, model_pts, model_normals, symmetry_tfs=None, mesh=None):
         max_xyz = mesh.vertices.max(axis=0)
@@ -807,27 +806,7 @@ class FoundationPose:
                 .reshape(4, 4)
             )
 
-        # Solution 1: IoU-based mask drift detection — catch hand occlusion before refiner runs
-        if self.track_good and self.pose_last is not None:
-            rendered_mask = render_cad_mask(
-                self.pose_last.reshape(4, 4).cpu().numpy(), self.mesh, K,
-                w=rgb.shape[0], h=rgb.shape[1]
-            )
-            intersection = np.logical_and(mask > 0, rendered_mask > 0).sum()
-            union = np.logical_or(mask > 0, rendered_mask > 0).sum()
-            iou = intersection / union if union > 0 else 0.0
-            if iou < 0.3:
-                print(f"[track_one_new_without_depth()] IoU={iou:.2f} < 0.3, mask drifted — flagging lost")
-                self.track_good = False
-
         if self.track_good == False:
-            # Solution 2: full re-registration after prolonged loss
-            self.frames_lost += 1
-            if self.frames_lost > 15:
-                print(f"[track_one_new_without_depth()] Lost for {self.frames_lost} frames, running full re-registration")
-                self.frames_lost = 0
-                pose = self.register_without_depth(K=K, rgb=rgb, ob_mask=mask, iteration=iteration)
-                return pose
             logging.info("lost tracking using Kalman filter")
             predict = self.tracker.update()
             xyz_predict = np.squeeze(predict["position"])
@@ -903,7 +882,6 @@ class FoundationPose:
             if np.abs(xyz - center).sum() > 0.1:
                 self.track_good = False
             self.track_good = True
-            self.frames_lost = 0
             self.last_depth = np.ones_like(mask) * xyz[2]
             # self.last_depth = render_cad_depth(pose.cpu().numpy(), self.mesh, K,  w=rgb.shape[0],h=rgb.shape[1],)
         else:
@@ -964,7 +942,5 @@ class FoundationPose:
                 # measurement[2]=measurement[2]*1.2
                 # self.tracker.update(measurement)
 
-        if self.track_good:
-            self.frames_lost = 0
         self.mask_last = mask
         return (pose @ self.get_tf_to_centered_mesh()).data.cpu().numpy().reshape(4, 4)
