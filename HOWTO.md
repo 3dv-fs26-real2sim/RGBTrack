@@ -229,7 +229,119 @@ scp -r <nethz_id>@student-cluster.inf.ethz.ch:/work/courses/3dv/team22/foundatio
 
 ---
 
-## 11. Known Issues & Fixes Already Applied
+## 11. Running on a New Video
+
+### 11a. Upload the video
+
+```bash
+# On your LOCAL machine:
+scp /path/to/your/video.mp4 <nethz_id>@student-cluster.inf.ethz.ch:/work/courses/3dv/team22/foundationpose/data/videos/
+```
+
+Also upload `cam_K.txt` (3×3 camera intrinsics, one row per line) for your camera if it differs from the existing one:
+```bash
+scp cam_K.txt <nethz_id>@student-cluster.inf.ethz.ch:/work/courses/3dv/team22/foundationpose/data/<your_scene_name>/
+```
+
+### 11b. Edit the two Python scripts (top of file only)
+
+**`scripts/prepare_scene.py`** — lines 5–6:
+```python
+VIDEO     = "/work/courses/3dv/team22/foundationpose/data/videos/<your_video>.mp4"
+SCENE_DIR = "/work/courses/3dv/team22/foundationpose/data/<your_scene_name>"
+```
+
+**`scripts/generate_mask.py`** — line 6:
+```python
+SCENE_DIR = "/work/courses/3dv/team22/foundationpose/data/<your_scene_name>"
+```
+
+Edit on the cluster:
+```bash
+nano /work/courses/3dv/team22/RGBTrack/scripts/prepare_scene.py
+nano /work/courses/3dv/team22/RGBTrack/scripts/generate_mask.py
+```
+
+### 11c. Extract frames
+
+Run on the login node (no GPU needed):
+```bash
+python /work/courses/3dv/team22/RGBTrack/scripts/prepare_scene.py
+```
+
+Copy `cam_K.txt` into the scene dir if you haven't already:
+```bash
+cp /path/to/cam_K.txt /work/courses/3dv/team22/foundationpose/data/<your_scene_name>/cam_K.txt
+```
+
+### 11d. Generate mask
+
+Find the object center pixel in frame 0:
+```bash
+# On your LOCAL machine:
+scp <nethz_id>@student-cluster.inf.ethz.ch:/work/courses/3dv/team22/foundationpose/data/<your_scene_name>/rgb/000000.png .
+```
+Open it, note pixel (x, y) of the object center. Then update `generate_mask.py` line 22:
+```python
+point_x, point_y = <X>, <Y>
+```
+
+Submit:
+```bash
+sbatch /work/courses/3dv/team22/RGBTrack/run_mask.sh
+```
+
+Verify:
+```bash
+# On your LOCAL machine:
+scp <nethz_id>@student-cluster.inf.ethz.ch:/work/courses/3dv/team22/foundationpose/data/<your_scene_name>/masks/000000_check.png .
+```
+
+### 11e. Run the tracker
+
+Edit the three lines in `run_job.sh`:
+```bash
+nano /work/courses/3dv/team22/RGBTrack/run_job.sh
+```
+
+Change:
+```bash
+--mesh_file  /work/courses/3dv/team22/foundationpose/data/object/<object>/.<ext>
+--test_scene_dir  /work/courses/3dv/team22/foundationpose/data/<your_scene_name>
+--debug_dir  /work/courses/3dv/team22/foundationpose/debug/<object>_<your_scene_name>
+```
+
+Submit:
+```bash
+sbatch /work/courses/3dv/team22/RGBTrack/run_job.sh
+```
+
+### 11f. Visualization
+
+Edit `run_job.sh` to add `--debug 2`:
+```bash
+nano /work/courses/3dv/team22/RGBTrack/run_job.sh
+# add --debug 2 to the python call
+```
+
+To limit to first 50 frames (faster), edit on the cluster:
+```bash
+nano /work/courses/3dv/team22/RGBTrack/run_demo_without_depth.py
+# Change:
+#   for i in range(len(reader.color_files)):
+# To:
+#   for i in range(min(50, len(reader.color_files))):
+```
+
+Resubmit, then download:
+```bash
+# On your LOCAL machine:
+scp -r <nethz_id>@student-cluster.inf.ethz.ch:/work/courses/3dv/team22/foundationpose/debug/<object>_<your_scene_name>/track_vis ./track_vis
+```
+
+---
+
+## 12. Known Issues & Fixes Already Applied
 
 All fixes below are already in the repo. This table is for reference when debugging new setups.
 
