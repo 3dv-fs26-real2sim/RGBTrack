@@ -66,7 +66,7 @@ if __name__ == "__main__":
 
     sam2 = SAM2Wrapper(
         checkpoint_path="/work/courses/3dv/team22/RGBTrack/segment-anything-2-real-time/sam2.1_hiera_small.pt",
-        config_path="/work/courses/3dv/team22/RGBTrack/segment-anything-2-real-time/sam2/configs/sam2.1/sam2.1_hiera_s.yaml",
+        config_path="configs/sam2.1/sam2.1_hiera_s.yaml",
     )
 
     reader = YcbineoatReader(
