@@ -18,6 +18,7 @@ def generate_masks_sam2_video(
     Saves per-frame masks to scene_dir/masks/<frame_id>.png (overwrites frame 0 too).
     """
     rgb_dir = os.path.join(scene_dir, "rgb")
+    jpg_dir = os.path.join(scene_dir, "rgb_jpg")
     mask_dir = os.path.join(scene_dir, "masks")
     os.makedirs(mask_dir, exist_ok=True)
 
@@ -31,7 +32,7 @@ def generate_masks_sam2_video(
 
     with torch.inference_mode(), torch.autocast(device, dtype=torch.bfloat16):
         state = predictor.init_state(
-            video_path=rgb_dir,
+            video_path=jpg_dir,
             offload_video_to_cpu=True,
             offload_state_to_cpu=True,
         )
