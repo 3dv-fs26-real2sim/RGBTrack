@@ -12,6 +12,7 @@ from datareader import *
 import argparse
 from tools import *
 import numpy as np
+from sam2_wrapper import SAM2Wrapper
 
 SAVE_VIDEO=False
 
@@ -63,6 +64,11 @@ if __name__ == "__main__":
     )
     logging.info("estimator initialization done")
 
+    sam2 = SAM2Wrapper(
+        checkpoint_path="/work/courses/3dv/team22/RGBTrack/segment-anything-2-real-time/sam2.1_hiera_small.pt",
+        config_path="/work/courses/3dv/team22/RGBTrack/segment-anything-2-real-time/sam2/configs/sam2.1/sam2.1_hiera_s.yaml",
+    )
+
     reader = YcbineoatReader(
         video_dir=args.test_scene_dir, shorter_side=None, zfar=np.inf
     )
@@ -71,34 +77,16 @@ if __name__ == "__main__":
         color = reader.get_color(i)
         if i == 0:
             mask = reader.get_mask(0).astype(bool)
-            last_mask= mask
             t1=time.time()
-            pose= binary_search_depth(est, mesh, color, mask, reader.K, debug=True)
-
-            # pose = est.register_without_depth(
-            #     K=reader.K,
-            #     rgb=color,
-            #     ob_mask=mask,
-            #     iteration=args.est_refine_iter,
-            # )
+            pose = binary_search_depth(est, mesh, color, mask, reader.K, debug=True)
             logging.info(f"Initial pose:\n{pose}")
-        
+            sam2.initialize(color, mask)
             t2=time.time()
-            if SAVE_VIDEO:
-                output_video_path = "fp_nodepth_improved.mp4"  # Specify the output video filename
-                fps = 30  # Frames per second for the video
-                # Assuming 'color' is the image shape (height, width, channels)
-                # Create a VideoWriter object
-                fourcc = cv2.VideoWriter_fourcc(*'XVID')  # Codec for .avi format
-                video_writer = cv2.VideoWriter(output_video_path, fourcc, fps, (640, 480))
         else:
             t1=time.time()
-            if args.mode==0:
-                last_depth = np.zeros_like(last_mask)
-            elif args.mode==1:
-                last_depth = render_cad_depth(pose, mesh, reader.K)
-            pose = est.track_one(
-                rgb=color, depth=last_depth, K=reader.K, iteration=args.track_refine_iter
+            mask = sam2.track(color)
+            pose = est.track_one_new_without_depth(
+                rgb=color, K=reader.K, iteration=args.track_refine_iter, mask=mask
             )
             t2=time.time()
         os.makedirs(f"{debug_dir}/ob_in_cam", exist_ok=True)
