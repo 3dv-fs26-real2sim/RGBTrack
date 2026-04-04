@@ -40,5 +40,7 @@ class SAM2Wrapper:
         # Convert logits back to a binary mask (H, W)
         # Assuming single object tracking for now (index 0)
         mask = (out_mask_logits[0] > 0.0).cpu().numpy().astype(np.uint8)
+        if mask.ndim == 3:
+            mask = mask[0]
         
         return mask
