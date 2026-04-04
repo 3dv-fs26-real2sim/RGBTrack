@@ -13,6 +13,7 @@ import argparse
 from tools import *
 import numpy as np
 from sam2_wrapper import SAM2Wrapper
+from scipy.spatial.transform import Rotation, Slerp
 
 SAVE_VIDEO=False
 
@@ -73,6 +74,13 @@ if __name__ == "__main__":
         video_dir=args.test_scene_dir, shorter_side=None, zfar=np.inf
     )
 
+    # Smoothing state
+    smooth_R = None  # Rotation object
+    smooth_t = None  # (3,) translation
+    alpha_t = 0.4    # EMA weight for translation (lower = smoother)
+    alpha_R = 0.4    # EMA weight for rotation (lower = smoother)
+    max_dz  = 0.08   # Max z change per frame (meters) — prevents occlusion z spikes
+
     for i in range(len(reader.color_files)):
         color = reader.get_color(i)
         if i == 0:
@@ -81,6 +89,8 @@ if __name__ == "__main__":
             pose = binary_search_depth(est, mesh, color, mask, reader.K, debug=True)
             logging.info(f"Initial pose:\n{pose}")
             sam2.initialize(color, mask)
+            smooth_R = Rotation.from_matrix(pose[:3, :3])
+            smooth_t = pose[:3, 3].copy()
             t2=time.time()
         else:
             t1=time.time()
@@ -88,6 +98,24 @@ if __name__ == "__main__":
             pose = est.track_one_new_without_depth(
                 rgb=color, K=reader.K, iteration=args.track_refine_iter, mask=mask
             )
+
+            # --- Smooth translation with z clamping ---
+            raw_t = pose[:3, 3]
+            dz = raw_t[2] - smooth_t[2]
+            if abs(dz) > max_dz:
+                raw_t = raw_t.copy()
+                raw_t[2] = smooth_t[2] + np.sign(dz) * max_dz
+            smooth_t = alpha_t * raw_t + (1 - alpha_t) * smooth_t
+
+            # --- Smooth rotation with SLERP ---
+            raw_R = Rotation.from_matrix(pose[:3, :3])
+            smooth_R = Slerp([0, 1], Rotation.concatenate([smooth_R, raw_R]))(alpha_R)
+
+            # Rebuild smoothed pose
+            pose = pose.copy()
+            pose[:3, :3] = smooth_R.as_matrix()
+            pose[:3, 3] = smooth_t
+
             t2=time.time()
         os.makedirs(f"{debug_dir}/ob_in_cam", exist_ok=True)
         np.savetxt(f"{debug_dir}/ob_in_cam/{reader.id_strs[i]}.txt", pose.reshape(4, 4))
