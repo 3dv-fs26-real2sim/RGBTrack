@@ -12,7 +12,10 @@ from datareader import *
 import argparse
 from tools import *
 import numpy as np
-from sam2_wrapper import SAM2Wrapper
+try:
+    from sam2_wrapper import SAM2Wrapper
+except ImportError:
+    SAM2Wrapper = None
 
 SAVE_VIDEO=False
 
