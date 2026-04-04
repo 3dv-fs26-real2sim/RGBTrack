@@ -806,19 +806,6 @@ class FoundationPose:
                 .reshape(4, 4)
             )
 
-        # IoU check: if SAM2 mask drifted to hand, flag lost and use Kalman prediction
-        if self.track_good and self.pose_last is not None:
-            rendered_mask = render_cad_mask(
-                self.pose_last.reshape(4, 4).cpu().numpy(), self.mesh, K,
-                w=rgb.shape[1], h=rgb.shape[0]
-            )
-            intersection = np.logical_and(mask > 0, rendered_mask > 0).sum()
-            union = np.logical_or(mask > 0, rendered_mask > 0).sum()
-            iou = intersection / union if union > 0 else 0.0
-            if iou < 0.3:
-                print(f"[track_one_new_without_depth()] IoU={iou:.2f} < 0.3, mask drifted to hand — using Kalman")
-                self.track_good = False
-
         if self.track_good == False:
             logging.info("lost tracking using Kalman filter")
             predict = self.tracker.update()
