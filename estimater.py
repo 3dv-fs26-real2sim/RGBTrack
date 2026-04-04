@@ -278,7 +278,6 @@ class FoundationPose:
         self.poses = poses
         self.scores = scores
         self.track_good = True
-        self.mask_predictor.initialize(rgb, ob_mask)
         rgb_r, depth_r, mask_r = render_rgbd(
             cad_model=self.mesh,
             object_pose=best_pose.data.cpu().numpy(),
@@ -661,7 +660,6 @@ class FoundationPose:
 
     # trans_disc = [{"R": np.eye(3), "t": np.array([[0, 0, 0]]).T}]  # Identity.
     def track_one_new(self, rgb, depth, K, iteration, mask, extra={}):
-        mask = self.mask_predictor.track(rgb)
         if self.pose_last is None:
             logging.info("Please init pose by register first")
             raise RuntimeError
@@ -789,7 +787,6 @@ class FoundationPose:
         return (pose @ self.get_tf_to_centered_mesh()).data.cpu().numpy().reshape(4, 4)
 
     def track_one_new_without_depth(self, rgb, K, iteration, mask, extra={}):
-        mask = self.mask_predictor.track(rgb)
         if self.pose_last is None:
             logging.info("Please init pose by register first")
             raise RuntimeError
