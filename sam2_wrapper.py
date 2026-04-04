@@ -9,7 +9,7 @@ class SAM2Wrapper:
         """
         self.device = device
         # Load the SAM-2 model
-        self.predictor = build_sam2_camera_predictor(config_path, checkpoint_path)
+        self.predictor = build_sam2_camera_predictor(config_path, checkpoint_path, device=device)
         self.predictor_state = None
 
     def initialize(self, first_frame, first_mask):
