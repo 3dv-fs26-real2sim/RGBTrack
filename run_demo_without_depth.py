@@ -32,6 +32,8 @@ if __name__ == "__main__":
     parser.add_argument("--debug", type=int, default=1)
     parser.add_argument("--debug_dir", type=str, default=f"{code_dir}/debug")
     parser.add_argument("--mode", type=int, default=0)
+    parser.add_argument("--use_video_masks", action="store_true",
+                        help="Use pre-generated SAM2 video masks from test_scene_dir/masks/ instead of real-time SAM2")
     args = parser.parse_args()
 
     set_logging_format()
@@ -64,10 +66,11 @@ if __name__ == "__main__":
     )
     logging.info("estimator initialization done")
 
-    sam2 = SAM2Wrapper(
-        checkpoint_path="/work/courses/3dv/team22/RGBTrack/segment-anything-2-real-time/sam2.1_hiera_small.pt",
-        config_path="configs/sam2.1/sam2.1_hiera_s.yaml",
-    )
+    if not args.use_video_masks:
+        sam2 = SAM2Wrapper(
+            checkpoint_path="/work/courses/3dv/team22/RGBTrack/segment-anything-2-real-time/sam2.1_hiera_small.pt",
+            config_path="configs/sam2.1/sam2.1_hiera_s.yaml",
+        )
 
     reader = YcbineoatReader(
         video_dir=args.test_scene_dir, shorter_side=None, zfar=np.inf
@@ -80,11 +83,17 @@ if __name__ == "__main__":
             t1=time.time()
             pose = binary_search_depth(est, mesh, color, mask, reader.K, debug=True)
             logging.info(f"Initial pose:\n{pose}")
-            sam2.initialize(color, mask)
+            if not args.use_video_masks:
+                sam2.initialize(color, mask)
             t2=time.time()
         else:
             t1=time.time()
-            mask = sam2.track(color)
+            if args.use_video_masks:
+                mask_path = os.path.join(args.test_scene_dir, "masks", f"{reader.id_strs[i]}.png")
+                mask = cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE)
+                mask = (mask > 127).astype(np.uint8)
+            else:
+                mask = sam2.track(color)
             pose = est.track_one_new_without_depth(
                 rgb=color, K=reader.K, iteration=args.track_refine_iter, mask=mask
             )

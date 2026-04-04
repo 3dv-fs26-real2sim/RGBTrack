@@ -26,4 +26,5 @@ mkdir -p logs
     --test_scene_dir /work/courses/3dv/team22/foundationpose/data/20250804_104715 \
     --debug_dir /work/courses/3dv/team22/foundationpose/debug/duck \
     --est_refine_iter 2 \
-    --track_refine_iter 2
+    --track_refine_iter 2 \
+    --use_video_masks
