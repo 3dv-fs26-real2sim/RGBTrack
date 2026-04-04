@@ -9,7 +9,7 @@
 module load cuda/12.8
 
 # ── Activate the shared venv ───────────────────────────────────────────────────
-export PATH=/work/courses/3dv/team22/foundationpose_env/bin:$PATH
+export PATH=/work/courses/3dv/team22/py310_env/bin:$PATH
 
 # ── Env vars required for CUDA extensions ─────────────────────────────────────
 export CUDA_HOME=/cluster/data/cuda/12.8
@@ -21,7 +21,7 @@ export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 cd /work/courses/3dv/team22/RGBTrack
 mkdir -p logs
 
-/work/courses/3dv/team22/foundationpose_env/bin/python run_demo_without_depth.py \
+/work/courses/3dv/team22/py310_env/bin/python run_demo_without_depth.py \
     --mesh_file /work/courses/3dv/team22/foundationpose/data/object/duck/duck.obj \
     --test_scene_dir /work/courses/3dv/team22/foundationpose/data/20250804_104715 \
     --debug_dir /work/courses/3dv/team22/foundationpose/debug/duck \
