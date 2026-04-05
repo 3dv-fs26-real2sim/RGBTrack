@@ -10,27 +10,27 @@ from datareader import *
 import argparse
 from tools import *
 import numpy as np
-from scipy.spatial.transform import Rotation as ScipyR, Slerp
+from scipy.spatial.transform import Rotation as ScipyR
 
 SAVE_VIDEO = False
 
 # ── Occlusion handling settings ────────────────────────────────────────────────
-# Single threshold: below this fraction of frame-0 mask area → occluded.
-OCCLUSION_THRESHOLD = 0.93
+# Below this fraction of frame-0 mask area → occluded, rotation fully frozen.
+OCCLUSION_THRESHOLD = 0.91
 
-# Weight given to frozen rotation during occlusion (SLERP).
-# 1.0 = full freeze, lower = allow small tracked motion.
-OCCLUSION_ROT_WEIGHT = 0.92
+# Max angular difference (degrees) from last good rotation to accept a new
+# tracked rotation even during occlusion. Keeps subtle real motion, rejects spikes.
+MAX_ROT_DELTA_DEG = 3.0
 
-# Frames to wait after object becomes visible again before re-init.
-RECOVERY_DELAY_FRAMES = 5
+# Frames to wait after object is fully visible again before re-init with binary_search_depth.
+RECOVERY_DELAY_FRAMES = 10
 # ──────────────────────────────────────────────────────────────────────────────
 
-def slerp_rotation(R_frozen, R_tracked, weight_frozen):
-    r_frozen = ScipyR.from_matrix(R_frozen)
-    r_tracked = ScipyR.from_matrix(R_tracked)
-    slerp = Slerp([0, 1], ScipyR.concatenate([r_frozen, r_tracked]))
-    return slerp(1.0 - weight_frozen).as_matrix()
+def rotation_delta_deg(R1, R2):
+    """Angular difference in degrees between two rotation matrices."""
+    R_rel = R1.T @ R2
+    angle = np.arccos(np.clip((np.trace(R_rel) - 1) / 2, -1, 1))
+    return np.degrees(angle)
 
 
 if __name__ == "__main__":
@@ -113,22 +113,24 @@ if __name__ == "__main__":
             )
 
             if occluded:
-                # weighted SLERP: mostly frozen, allow tiny tracked motion
-                pose[:3, :3] = slerp_rotation(last_good_rotation, pose[:3, :3], OCCLUSION_ROT_WEIGHT)
+                # fully freeze rotation, but accept if very close to last good
+                delta = rotation_delta_deg(last_good_rotation, pose[:3, :3])
+                if delta <= MAX_ROT_DELTA_DEG:
+                    last_good_rotation = pose[:3, :3].copy()  # subtle real motion — accept
+                else:
+                    pose[:3, :3] = last_good_rotation  # spike — reject
                 was_occluded = True
                 frames_since_visible = 0
             else:
                 if was_occluded:
-                    # object just became visible again — start counting
                     frames_since_visible += 1
+                    pose[:3, :3] = last_good_rotation  # keep frozen while waiting
                     if frames_since_visible >= RECOVERY_DELAY_FRAMES:
                         logging.info(f"[frame {i}] Recovery re-init with binary_search_depth")
                         pose = binary_search_depth(est, mesh, color, mask.astype(bool), reader.K, debug=False)
                         last_good_rotation = pose[:3, :3].copy()
                         was_occluded = False
                         frames_since_visible = 0
-                    else:
-                        pose[:3, :3] = last_good_rotation  # keep frozen while waiting
                 else:
                     last_good_rotation = pose[:3, :3].copy()
 
