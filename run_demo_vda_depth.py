@@ -73,18 +73,25 @@ if __name__ == "__main__":
         depth_path = os.path.join(args.test_scene_dir, "depth", f"{reader.id_strs[i]}.png")
         depth = cv2.imread(depth_path, cv2.IMREAD_UNCHANGED).astype(np.float32) / 1000.0
 
+        # load SAM2 video mask every frame
+        mask_path = os.path.join(args.test_scene_dir, "masks", f"{reader.id_strs[i]}.png")
+        mask = cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE)
+        mask = (mask > 127).astype(np.uint8)
+
         if i == 0:
-            mask = cv2.imread(os.path.join(args.test_scene_dir, "masks", f"{reader.id_strs[i]}.png"), cv2.IMREAD_GRAYSCALE)
-            mask = (mask > 127).astype(bool)
-            pose = est.register(
-                K=reader.K, rgb=color, depth=depth, ob_mask=mask,
-                iteration=args.est_refine_iter
-            )
+            # use binary_search_depth for robust mask-based initialization (no depth needed)
+            pose = binary_search_depth(est, mesh, color, mask.astype(bool), reader.K, debug=True)
             logging.info(f"Initial pose:\n{pose}")
+            # compute scale correction: align VDA depth to binary_search_depth z
+            obj_pixels = mask > 0
+            vda_z = depth[obj_pixels].mean() if obj_pixels.any() else 1.0
+            bsd_z = float(pose[2, 3])
+            depth_scale = bsd_z / vda_z if vda_z > 0 else 1.0
+            logging.info(f"Depth scale correction: {depth_scale:.3f} (bsd_z={bsd_z:.3f}, vda_z={vda_z:.3f})")
         else:
-            pose = est.track_one(
-                rgb=color, depth=depth, K=reader.K,
-                iteration=args.track_refine_iter
+            pose = est.track_one_new(
+                rgb=color, depth=depth * depth_scale, K=reader.K,
+                iteration=args.track_refine_iter, mask=mask
             )
 
         t2 = time.time()
