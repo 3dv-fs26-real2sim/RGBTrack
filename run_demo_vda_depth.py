@@ -73,21 +73,18 @@ if __name__ == "__main__":
         depth_path = os.path.join(args.test_scene_dir, "depth", f"{reader.id_strs[i]}.png")
         depth = cv2.imread(depth_path, cv2.IMREAD_UNCHANGED).astype(np.float32) / 1000.0
 
-        # load SAM2 video mask
-        mask_path = os.path.join(args.test_scene_dir, "masks", f"{reader.id_strs[i]}.png")
-        mask = cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE)
-        mask = (mask > 127).astype(np.uint8)
-
         if i == 0:
+            mask = cv2.imread(os.path.join(args.test_scene_dir, "masks", f"{reader.id_strs[i]}.png"), cv2.IMREAD_GRAYSCALE)
+            mask = (mask > 127).astype(bool)
             pose = est.register(
-                K=reader.K, rgb=color, depth=depth, ob_mask=mask.astype(bool),
+                K=reader.K, rgb=color, depth=depth, ob_mask=mask,
                 iteration=args.est_refine_iter
             )
             logging.info(f"Initial pose:\n{pose}")
         else:
-            pose = est.track_one_new(
+            pose = est.track_one(
                 rgb=color, depth=depth, K=reader.K,
-                iteration=args.track_refine_iter, mask=mask
+                iteration=args.track_refine_iter
             )
 
         t2 = time.time()
