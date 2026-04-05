@@ -22,15 +22,12 @@ import numpy as np
 
 SAVE_VIDEO = False
 
-# ── Occlusion re-init settings ─────────────────────────────────────────────────
-# When the visible mask area drops below this fraction of the frame-0 area,
-# the object is considered occluded. Lower = triggers sooner (hand just touching).
-# Tune this first: 0.75 means 25% of the object must be hidden to trigger.
+# ── Occlusion freeze settings ──────────────────────────────────────────────────
+# When visible mask area drops below this fraction of frame-0 area,
+# freeze rotation and only update translation.
+# Lower = triggers sooner (hand just starting to cover object).
+# Tune: 0.75 means 25% hidden triggers freeze.
 OCCLUSION_THRESHOLD = 0.75
-
-# When occluded, re-run binary_search_depth every N frames to recover pose.
-# Lower = more recoveries but slower. Set to 1 to re-init every occluded frame.
-REINIT_EVERY_N = 5
 # ──────────────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
@@ -78,6 +75,7 @@ if __name__ == "__main__":
 
     frame0_mask_area = None
     depth_scale = 1.0
+    last_good_rotation = None
 
     for i in range(len(reader.color_files)):
         color = reader.get_color(i)
@@ -97,6 +95,7 @@ if __name__ == "__main__":
             pose = binary_search_depth(est, mesh, color, mask.astype(bool), reader.K, debug=True)
             logging.info(f"Initial pose:\n{pose}")
             frame0_mask_area = float(mask.sum())
+            last_good_rotation = pose[:3, :3].copy()
             # compute depth scale correction: align VDA depth to binary_search_depth z
             obj_pixels = mask > 0
             vda_z = depth[obj_pixels].mean() if obj_pixels.any() else 1.0
@@ -107,14 +106,16 @@ if __name__ == "__main__":
             mask_area = float(mask.sum())
             occluded = (frame0_mask_area > 0) and (mask_area < OCCLUSION_THRESHOLD * frame0_mask_area)
 
-            if occluded and (i % REINIT_EVERY_N == 0):
-                logging.info(f"[frame {i}] Occlusion detected (area {mask_area:.0f} < {OCCLUSION_THRESHOLD}*{frame0_mask_area:.0f}), re-init with binary_search_depth")
-                pose = binary_search_depth(est, mesh, color, mask.astype(bool), reader.K, debug=False)
+            pose = est.track_one_new(
+                rgb=color, depth=depth * depth_scale, K=reader.K,
+                iteration=args.track_refine_iter, mask=mask
+            )
+
+            if occluded:
+                # freeze rotation: keep last good rotation, only allow translation update
+                pose[:3, :3] = last_good_rotation
             else:
-                pose = est.track_one_new(
-                    rgb=color, depth=depth * depth_scale, K=reader.K,
-                    iteration=args.track_refine_iter, mask=mask
-                )
+                last_good_rotation = pose[:3, :3].copy()
 
         t2 = time.time()
         os.makedirs(f"{debug_dir}/ob_in_cam", exist_ok=True)
