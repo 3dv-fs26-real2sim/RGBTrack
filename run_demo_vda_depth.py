@@ -25,9 +25,13 @@ SAVE_VIDEO = False
 # ── Occlusion freeze settings ──────────────────────────────────────────────────
 # When visible mask area drops below this fraction of frame-0 area,
 # freeze rotation and only update translation.
-# Lower = triggers sooner (hand just starting to cover object).
-# Tune: 0.75 means 25% hidden triggers freeze.
-OCCLUSION_THRESHOLD = 0.75
+# Lower = triggers sooner. Tune this first.
+OCCLUSION_THRESHOLD = 0.90
+
+# When mask area recovers above this fraction, trigger a binary_search_depth
+# re-init to snap rotation back to correct value after occlusion ends.
+# Should be >= OCCLUSION_THRESHOLD.
+RECOVERY_THRESHOLD = 0.93
 # ──────────────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
@@ -76,6 +80,7 @@ if __name__ == "__main__":
     frame0_mask_area = None
     depth_scale = 1.0
     last_good_rotation = None
+    was_occluded = False
 
     for i in range(len(reader.color_files)):
         color = reader.get_color(i)
@@ -111,11 +116,20 @@ if __name__ == "__main__":
                 iteration=args.track_refine_iter, mask=mask
             )
 
-            if occluded:
+            recovering = was_occluded and (mask_area >= RECOVERY_THRESHOLD * frame0_mask_area)
+
+            if recovering:
+                logging.info(f"[frame {i}] Recovery detected — re-init with binary_search_depth")
+                pose = binary_search_depth(est, mesh, color, mask.astype(bool), reader.K, debug=False)
+                last_good_rotation = pose[:3, :3].copy()
+                was_occluded = False
+            elif occluded:
                 # freeze rotation: keep last good rotation, only allow translation update
                 pose[:3, :3] = last_good_rotation
+                was_occluded = True
             else:
                 last_good_rotation = pose[:3, :3].copy()
+                was_occluded = False
 
         t2 = time.time()
         os.makedirs(f"{debug_dir}/ob_in_cam", exist_ok=True)
