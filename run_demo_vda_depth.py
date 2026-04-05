@@ -22,6 +22,17 @@ import numpy as np
 
 SAVE_VIDEO = False
 
+# ── Occlusion re-init settings ─────────────────────────────────────────────────
+# When the visible mask area drops below this fraction of the frame-0 area,
+# the object is considered occluded. Lower = triggers sooner (hand just touching).
+# Tune this first: 0.75 means 25% of the object must be hidden to trigger.
+OCCLUSION_THRESHOLD = 0.75
+
+# When occluded, re-run binary_search_depth every N frames to recover pose.
+# Lower = more recoveries but slower. Set to 1 to re-init every occluded frame.
+REINIT_EVERY_N = 5
+# ──────────────────────────────────────────────────────────────────────────────
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     code_dir = os.path.dirname(os.path.realpath(__file__))
@@ -65,6 +76,9 @@ if __name__ == "__main__":
 
     reader = YcbineoatReader(video_dir=args.test_scene_dir, shorter_side=None, zfar=np.inf)
 
+    frame0_mask_area = None
+    depth_scale = 1.0
+
     for i in range(len(reader.color_files)):
         color = reader.get_color(i)
         t1 = time.time()
@@ -79,20 +93,28 @@ if __name__ == "__main__":
         mask = (mask > 127).astype(np.uint8)
 
         if i == 0:
-            # use binary_search_depth for robust mask-based initialization (no depth needed)
+            # use binary_search_depth for robust mask-based initialization
             pose = binary_search_depth(est, mesh, color, mask.astype(bool), reader.K, debug=True)
             logging.info(f"Initial pose:\n{pose}")
-            # compute scale correction: align VDA depth to binary_search_depth z
+            frame0_mask_area = float(mask.sum())
+            # compute depth scale correction: align VDA depth to binary_search_depth z
             obj_pixels = mask > 0
             vda_z = depth[obj_pixels].mean() if obj_pixels.any() else 1.0
             bsd_z = float(pose[2, 3])
             depth_scale = bsd_z / vda_z if vda_z > 0 else 1.0
             logging.info(f"Depth scale correction: {depth_scale:.3f} (bsd_z={bsd_z:.3f}, vda_z={vda_z:.3f})")
         else:
-            pose = est.track_one_new(
-                rgb=color, depth=depth * depth_scale, K=reader.K,
-                iteration=args.track_refine_iter, mask=mask
-            )
+            mask_area = float(mask.sum())
+            occluded = (frame0_mask_area > 0) and (mask_area < OCCLUSION_THRESHOLD * frame0_mask_area)
+
+            if occluded and (i % REINIT_EVERY_N == 0):
+                logging.info(f"[frame {i}] Occlusion detected (area {mask_area:.0f} < {OCCLUSION_THRESHOLD}*{frame0_mask_area:.0f}), re-init with binary_search_depth")
+                pose = binary_search_depth(est, mesh, color, mask.astype(bool), reader.K, debug=False)
+            else:
+                pose = est.track_one_new(
+                    rgb=color, depth=depth * depth_scale, K=reader.K,
+                    iteration=args.track_refine_iter, mask=mask
+                )
 
         t2 = time.time()
         os.makedirs(f"{debug_dir}/ob_in_cam", exist_ok=True)
