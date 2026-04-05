@@ -10,7 +10,7 @@ from datareader import *
 import argparse
 from tools import *
 import numpy as np
-from scipy.spatial.transform import Rotation as ScipyR
+from scipy.spatial.transform import Rotation as ScipyR, Slerp
 
 SAVE_VIDEO = False
 
@@ -29,8 +29,8 @@ RECOVERY_DELAY_FRAMES = 5
 def slerp_rotation(R_frozen, R_tracked, weight_frozen):
     r_frozen = ScipyR.from_matrix(R_frozen)
     r_tracked = ScipyR.from_matrix(R_tracked)
-    r_out = ScipyR.slerp([0, 1], [r_frozen, r_tracked])(1.0 - weight_frozen)
-    return r_out.as_matrix()
+    slerp = Slerp([0, 1], ScipyR.concatenate([r_frozen, r_tracked]))
+    return slerp(1.0 - weight_frozen).as_matrix()
 
 
 if __name__ == "__main__":
