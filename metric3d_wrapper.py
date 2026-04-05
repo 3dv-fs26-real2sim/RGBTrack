@@ -14,6 +14,9 @@ import os
 
 METRIC3D_DIR = "/work/courses/3dv/team22/Metric3D"
 
+# Fixed canonical input size for Metric3D ViT-Large (crop_size from vit.raft5.large.py)
+CANONICAL_SIZE = (616, 1064)  # (H, W)
+
 
 class Metric3DWrapper:
     def __init__(self, checkpoint_path, model_type="metric3d_vit_large", device="cuda"):
@@ -35,17 +38,15 @@ class Metric3DWrapper:
         Returns depth: (H, W) float32 metric depth in metres
         """
         h, w = rgb.shape[:2]
-        fx, fy = float(K[0, 0]), float(K[1, 1])
-        cx, cy = float(K[0, 2]), float(K[1, 2])
-        intrinsic = [fx, fy, cx, cy]
+        fx = float(K[0, 0])
 
-        # canonical focal length used by Metric3D (ViT models)
-        canonical_focal = 1000.0
-        scale = canonical_focal / fx
-        new_w = int(w * scale)
-        new_h = int(h * scale)
-        rgb_resized = cv2.resize(rgb, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
-        intrinsic_scaled = [canonical_focal, canonical_focal * fy / fx, cx * scale, cy * scale]
+        # resize to canonical size
+        target_h, target_w = CANONICAL_SIZE
+        rgb_resized = cv2.resize(rgb, (target_w, target_h), interpolation=cv2.INTER_LINEAR)
+        scale_w = target_w / w
+        scale_h = target_h / h
+        # adjusted focal length for the rescaled image
+        fx_scaled = fx * scale_w
 
         mean = torch.tensor([123.675, 116.28, 103.53], device=self.device).view(3, 1, 1)
         std  = torch.tensor([58.395, 57.12, 57.375],  device=self.device).view(3, 1, 1)
@@ -58,7 +59,8 @@ class Metric3DWrapper:
             pred_depth, _, _ = self.model.inference({"input": img_t})
 
         depth = pred_depth.squeeze().cpu().numpy()
+        # resize depth back to original resolution
         depth = cv2.resize(depth, (w, h), interpolation=cv2.INTER_LINEAR)
-        # rescale back from canonical focal
-        depth = depth / scale
+        # correct metric scale: depth from canonical is for fx_scaled, rescale to fx
+        depth = depth * (fx_scaled / fx)
         return depth.astype(np.float32)
