@@ -15,15 +15,16 @@ from scipy.spatial.transform import Rotation as ScipyR
 SAVE_VIDEO = False
 
 # ── Occlusion handling settings ────────────────────────────────────────────────
-# Below this fraction of frame-0 mask area → occluded, rotation fully frozen.
-OCCLUSION_THRESHOLD = 0.91
+# Rotation freeze activates when mask drops below this fraction of frame-0 area.
+OCCLUSION_THRESHOLD = 0.90
+
+# Rotation freeze deactivates (and re-init triggers) when mask recovers above this.
+# Higher than OCCLUSION_THRESHOLD = hysteresis, avoids flickering.
+RECOVERY_THRESHOLD = 0.95
 
 # Max angular difference (degrees) from last good rotation to accept a new
-# tracked rotation even during occlusion. Keeps subtle real motion, rejects spikes.
+# tracked rotation during occlusion. Keeps subtle real motion, rejects spikes.
 MAX_ROT_DELTA_DEG = 3.0
-
-# Frames to wait after object is fully visible again before re-init with binary_search_depth.
-RECOVERY_DELAY_FRAMES = 10
 # ──────────────────────────────────────────────────────────────────────────────
 
 def rotation_delta_deg(R1, R2):
@@ -80,7 +81,6 @@ if __name__ == "__main__":
     depth_scale = 1.0
     last_good_rotation = None
     was_occluded = False
-    frames_since_visible = 0
 
     for i in range(len(reader.color_files)):
         color = reader.get_color(i)
@@ -120,19 +120,17 @@ if __name__ == "__main__":
                 else:
                     pose[:3, :3] = last_good_rotation  # spike — reject
                 was_occluded = True
-                frames_since_visible = 0
-            else:
-                if was_occluded:
-                    frames_since_visible += 1
-                    pose[:3, :3] = last_good_rotation  # keep frozen while waiting
-                    if frames_since_visible >= RECOVERY_DELAY_FRAMES:
-                        logging.info(f"[frame {i}] Recovery re-init with binary_search_depth")
-                        pose = binary_search_depth(est, mesh, color, mask.astype(bool), reader.K, debug=False)
-                        last_good_rotation = pose[:3, :3].copy()
-                        was_occluded = False
-                        frames_since_visible = 0
-                else:
+            elif was_occluded:
+                # still frozen until mask recovers above RECOVERY_THRESHOLD
+                if mask_area >= RECOVERY_THRESHOLD * frame0_mask_area:
+                    logging.info(f"[frame {i}] Recovery re-init with binary_search_depth")
+                    pose = binary_search_depth(est, mesh, color, mask.astype(bool), reader.K, debug=False)
                     last_good_rotation = pose[:3, :3].copy()
+                    was_occluded = False
+                else:
+                    pose[:3, :3] = last_good_rotation  # not recovered enough yet — stay frozen
+            else:
+                last_good_rotation = pose[:3, :3].copy()
 
         t2 = time.time()
         os.makedirs(f"{debug_dir}/ob_in_cam", exist_ok=True)
