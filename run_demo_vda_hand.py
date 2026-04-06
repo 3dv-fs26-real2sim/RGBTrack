@@ -73,6 +73,8 @@ if __name__ == "__main__":
                         help="Path to Metric3D checkpoint. If set, uses Metric3D instead of VDA depth PNGs.")
     parser.add_argument("--depth_pro_ckpt", type=str, default=None,
                         help="Path to Depth Pro checkpoint. If set, uses Depth Pro instead of VDA depth PNGs.")
+    parser.add_argument("--depth_dir", type=str, default=None,
+                        help="Override depth PNG directory (e.g. depth_pro/ for pre-generated maps). Defaults to test_scene_dir/depth/")
     args = parser.parse_args()
 
     set_logging_format()
@@ -123,7 +125,8 @@ if __name__ == "__main__":
         if metric3d is not None:
             depth = metric3d.estimate(color, reader.K)
         else:
-            depth_path = os.path.join(args.test_scene_dir, "depth", f"{reader.id_strs[i]}.png")
+            depth_dir  = args.depth_dir or os.path.join(args.test_scene_dir, "depth")
+            depth_path = os.path.join(depth_dir, f"{reader.id_strs[i]}.png")
             depth = cv2.imread(depth_path, cv2.IMREAD_UNCHANGED).astype(np.float32) / 1000.0
 
         mask_path = os.path.join(args.test_scene_dir, "masks", f"{reader.id_strs[i]}.png")
