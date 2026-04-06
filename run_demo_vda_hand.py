@@ -242,6 +242,7 @@ if __name__ == "__main__":
                     logging.info(f"[frame {i}] Release detected — dist {hand_duck_dist:.4f} m  "
                                  f"history={[f'{d:.3f}' for d in dist_history]}")
                     dist_history.clear()
+                    
 
             # ── State machine ──────────────────────────────────────────────────
             if occluded:
@@ -255,10 +256,11 @@ if __name__ == "__main__":
                     pose[:3, :3] = clipped
                     last_good_duck_rot = clipped
                 elif hand_rot_delta is not None:
-                    # Hand is holding — apply rotation delta
+                    # Hand is holding — apply rotation delta, clipped to 2 deg/frame
                     new_rot = hand_rot_delta @ last_good_duck_rot
-                    pose[:3, :3] = new_rot
-                    last_good_duck_rot = new_rot
+                    clipped = clip_rotation_consistent(last_good_duck_rot, new_rot, 2.0, vel_history)
+                    pose[:3, :3] = clipped
+                    last_good_duck_rot = clipped
                 else:
                     # No hand data — average then clip fallback
                     raw_rot_buffer.append(pose[:3, :3].copy())
