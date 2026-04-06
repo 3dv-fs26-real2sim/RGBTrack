@@ -1,15 +1,18 @@
 """
-FoundationPose dual-tracker: duck (main object) + hand (for occlusion rotation).
+FoundationPose dual-tracker: duck (main object) + hand (for occlusion).
 
-During occlusion, duck rotation is updated using the hand's rotation delta
-while the hand is holding the duck. Grasp logic fires only once per video.
+During occlusion, duck is tracked using the union of duck+hand SAM2VP masks.
+This naturally follows the hand-held duck as a rigid unit (same approach that
+made XMem+RGBTrack work well during grasps).
+
+On release, re-init with duck mask only so FoundationPose finds the duck again.
+Grasp logic fires only once per video.
 
 Release heuristic:
-  - distances < DIST_IGNORE_BELOW are unreliable (too close) — excluded from history
-  - release fires when dist > DIST_RELEASE_ABOVE and the rolling avg of the last
-    RELEASE_CONSEC reliable distances is farther than the one before them
-  - on release: freeze rotation until occlusion clears, then re-init
-  - after re-init: grasp_done=True, hand logic disabled for the rest of the video
+  - grasp_entered: dist must drop below 0.11m at least once (confirmed contact)
+  - only after grasp_entered: accumulate dist_history when dist > DIST_RELEASE_ABOVE
+  - if dist dips back below DIST_RELEASE_ABOVE, reset history
+  - release fires when avg(last RELEASE_CONSEC) > anchor (oldest in buffer)
 
 Requires:
 - test_scene_dir/depth/      — VDA depth PNGs (uint16 mm)
@@ -22,19 +25,18 @@ from datareader import *
 import argparse
 from tools import *
 import numpy as np
-from scipy.spatial.transform import Rotation as ScipyR
 
 SAVE_VIDEO = False
 
 # ── Settings ───────────────────────────────────────────────────────────────────
 OCCLUSION_THRESHOLD  = 0.90   # duck mask below this → occluded
 RECOVERY_THRESHOLD   = 0.95   # duck mask above this → recovered (re-init)
-MAX_ROT_DELTA_DEG    = 3.0    # accept small duck rotation during occlusion (no-hand fallback)
+MAX_ROT_DELTA_DEG    = 3.0    # freeze fallback when no hand mask available
 
 HAND_SEED_FRAME      = 90     # frame where hand mask was initialized
 DIST_IGNORE_BELOW    = 0.09   # metres — distances below this are unreliable (too close)
-DIST_RELEASE_ABOVE   = 0.13   # metres — release candidate when dist exceeds this
-RELEASE_CONSEC       = 3      # rolling avg of last N reliable dists must exceed the one before
+DIST_RELEASE_ABOVE   = 0.13   # metres — accumulate release evidence above this
+RELEASE_CONSEC       = 3      # avg of last N must exceed anchor to fire release
 DIST_LOG_INTERVAL    = 5      # log hand-duck distance every N frames
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -66,7 +68,7 @@ if __name__ == "__main__":
     mesh = trimesh.load(args.mesh_file)
     mesh.apply_scale(0.001)
 
-    # ── Hand mesh ──────────────────────────────────────────────────────────────
+    # ── Hand mesh (for hand pose tracking / distance only) ─────────────────────
     hand_mesh_raw = trimesh.load(args.hand_mesh_file)
     if hasattr(hand_mesh_raw, 'geometry'):
         hand_mesh = trimesh.util.concatenate(list(hand_mesh_raw.geometry.values()))
@@ -90,7 +92,7 @@ if __name__ == "__main__":
         model_pts=mesh.vertices, model_normals=mesh.vertex_normals, mesh=mesh,
         scorer=scorer, refiner=refiner, debug_dir=debug_dir, debug=debug, glctx=glctx,
     )
-    # Hand estimator (separate instance)
+    # Hand estimator (used only for distance measurement)
     est_hand = FoundationPose(
         model_pts=hand_mesh.vertices, model_normals=hand_mesh.vertex_normals, mesh=hand_mesh,
         scorer=scorer, refiner=refiner, debug_dir=debug_dir, debug=0, glctx=glctx,
@@ -104,14 +106,12 @@ if __name__ == "__main__":
     last_good_duck_rot = None
     was_occluded       = False
     hand_pose_last     = None
-    hand_rot_last      = None
-    hand_rot_delta     = None
 
     # Grasp state (one-shot)
     grasp_done         = False   # True after first grasp+release cycle — disables hand logic
     hand_released      = False   # release detected, waiting for occlusion to clear
     grasp_entered      = False   # True once dist dropped below 0.11m (confirmed contact)
-    dist_history       = []      # rolling buffer of last (RELEASE_CONSEC+1) values > 0.13m
+    dist_history       = []      # rolling buffer for release detection
 
     for i in range(len(reader.color_files)):
         color = reader.get_color(i)
@@ -126,26 +126,20 @@ if __name__ == "__main__":
 
         hand_mask_path = os.path.join(args.test_scene_dir, "hand_masks", f"{reader.id_strs[i]}.png")
         hand_mask_exists = os.path.exists(hand_mask_path)
+        hand_mask = None
         if hand_mask_exists:
             hand_mask = cv2.imread(hand_mask_path, cv2.IMREAD_GRAYSCALE)
             hand_mask = (hand_mask > 127).astype(np.uint8)
 
-        # ── Hand tracker ──────────────────────────────────────────────────────
+        # ── Hand tracker (distance measurement only) ───────────────────────────
         if i == HAND_SEED_FRAME and hand_mask_exists and hand_mask.sum() > 100:
             logging.info(f"[frame {i}] Initializing hand tracker")
             hand_pose_last = binary_search_depth(est_hand, hand_mesh, color, hand_mask.astype(bool), reader.K, debug=False)
-            hand_rot_last = hand_pose_last[:3, :3].copy()
-            hand_rot_delta = None
         elif i > HAND_SEED_FRAME and hand_pose_last is not None and hand_mask_exists:
             hand_pose_last = est_hand.track_one_new(
                 rgb=color, depth=depth * depth_scale, K=reader.K,
                 iteration=args.track_refine_iter, mask=hand_mask
             )
-            hand_rot_new = hand_pose_last[:3, :3].copy()
-            hand_rot_delta = hand_rot_new @ hand_rot_last.T  # rotation change this frame
-            hand_rot_last = hand_rot_new
-        else:
-            hand_rot_delta = None
 
         # ── Duck tracker ──────────────────────────────────────────────────────
         if i == 0:
@@ -162,9 +156,15 @@ if __name__ == "__main__":
             mask_area = float(mask.sum())
             occluded = (frame0_mask_area > 0) and (mask_area < OCCLUSION_THRESHOLD * frame0_mask_area)
 
+            # Choose tracking mask
+            if occluded and not grasp_done and not hand_released and hand_mask is not None:
+                track_mask = np.logical_or(mask, hand_mask).astype(np.uint8)
+            else:
+                track_mask = mask
+
             pose = est.track_one_new(
                 rgb=color, depth=depth * depth_scale, K=reader.K,
-                iteration=args.track_refine_iter, mask=mask
+                iteration=args.track_refine_iter, mask=track_mask
             )
 
             # ── Hand-duck distance ─────────────────────────────────────────────
@@ -175,23 +175,19 @@ if __name__ == "__main__":
                     logging.info(f"[frame {i}] hand-duck dist: {hand_duck_dist:.4f} m  "
                                  f"occluded={occluded}  grasp_done={grasp_done}  hand_released={hand_released}")
 
-            # ── Release detection (only while grasp active) ────────────────────
+            # ── Release detection (one-shot) ───────────────────────────────────
             if not grasp_done and not hand_released and occluded and hand_duck_dist is not None:
-                # Gate: confirmed contact required before release can fire
                 if hand_duck_dist < 0.11:
                     grasp_entered = True
 
                 if grasp_entered:
                     if hand_duck_dist > DIST_RELEASE_ABOVE:
-                        # Accumulate moving-away evidence
                         dist_history.append(hand_duck_dist)
                         if len(dist_history) > RELEASE_CONSEC + 1:
                             dist_history.pop(0)
                     else:
-                        # Dipped back below threshold — restart history
-                        dist_history.clear()
+                        dist_history.clear()  # dipped back — restart
 
-                # Release: avg(last N) > anchor (N+1 th last)
                 if (len(dist_history) == RELEASE_CONSEC + 1
                         and sum(dist_history[1:]) / RELEASE_CONSEC > dist_history[0]):
                     hand_released = True
@@ -202,20 +198,11 @@ if __name__ == "__main__":
             # ── State machine ──────────────────────────────────────────────────
             if occluded:
                 if hand_released or grasp_done:
-                    # Freeze — waiting for occlusion to clear after release
+                    # Freeze rotation — waiting for duck to reappear
                     pose[:3, :3] = last_good_duck_rot
-                elif hand_rot_delta is not None:
-                    # Hand is close and holding — apply rotation delta
-                    new_rot = hand_rot_delta @ last_good_duck_rot
-                    pose[:3, :3] = new_rot
-                    last_good_duck_rot = new_rot
                 else:
-                    # No hand data — small-delta freeze fallback
-                    delta = rotation_delta_deg(last_good_duck_rot, pose[:3, :3])
-                    if delta <= MAX_ROT_DELTA_DEG:
-                        last_good_duck_rot = pose[:3, :3].copy()
-                    else:
-                        pose[:3, :3] = last_good_duck_rot
+                    # Combined mask tracking active — accept pose as-is
+                    last_good_duck_rot = pose[:3, :3].copy()
                 was_occluded = True
 
             elif was_occluded and mask_area >= RECOVERY_THRESHOLD * frame0_mask_area:
