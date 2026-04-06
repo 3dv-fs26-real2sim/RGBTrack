@@ -21,17 +21,14 @@ DEPTH_PRO_DIR = "/work/courses/3dv/team22/ml-depth-pro"
 class DepthProWrapper:
     def __init__(self, checkpoint_path=f"{DEPTH_PRO_DIR}/checkpoints/depth_pro.pt", device="cuda"):
         self.device = device
-        # create_model_and_transforms loads from the default location inside the package;
-        # manually load weights from checkpoint_path afterwards if a custom path is given.
+        from depth_pro.depth_pro import DEFAULT_MONODEPTH_CONFIG_DICT, DepthProConfig
+        config = DepthProConfig(
+            **{**DEFAULT_MONODEPTH_CONFIG_DICT, "checkpoint_uri": checkpoint_path}
+        )
         self.model, self.transform = depth_pro.create_model_and_transforms(
+            config=config,
             device=torch.device(device),
         )
-        if checkpoint_path:
-            import torch as _torch
-            state = _torch.load(checkpoint_path, map_location="cpu")
-            if "model" in state:
-                state = state["model"]
-            self.model.load_state_dict(state, strict=False)
         self.model.eval()
 
     def estimate(self, rgb, K):
