@@ -28,9 +28,12 @@ CMAP = cv2.COLORMAP_PLASMA   # colormap for depth
 
 
 def depth_to_rgb(depth, vmin, vmax):
-    """Float32 depth (m) → uint8 RGB colourised frame."""
-    depth_clipped = np.clip(depth, vmin, vmax)
-    norm = ((depth_clipped - vmin) / (vmax - vmin) * 255).astype(np.uint8)
+    """Float32 depth (m) → uint8 RGB colourised frame (log scale for close-up detail)."""
+    depth_clipped = np.clip(depth, max(vmin, 1e-3), vmax)
+    log_d    = np.log(depth_clipped)
+    log_min  = np.log(max(vmin, 1e-3))
+    log_max  = np.log(vmax)
+    norm = ((log_d - log_min) / (log_max - log_min) * 255).astype(np.uint8)
     colored = cv2.applyColorMap(norm, CMAP)
     return cv2.cvtColor(colored, cv2.COLOR_BGR2RGB)
 
@@ -51,8 +54,9 @@ def make_colorbar(vmin, vmax, h, bar_w=60, font_scale=0.45):
         cv2.putText(canvas, text, (bar_w - 18, y), cv2.FONT_HERSHEY_SIMPLEX,
                     font_scale, (220, 220, 220), 1, cv2.LINE_AA)
 
+    mid = np.exp((np.log(max(vmin, 1e-3)) + np.log(vmax)) / 2)
     put(f"{vmax:.2f}m", 12)
-    put(f"{(vmin+vmax)/2:.2f}m", h // 2 + 5)
+    put(f"{mid:.2f}m", h // 2 + 5)
     put(f"{vmin:.2f}m", h - 5)
     return canvas
 
