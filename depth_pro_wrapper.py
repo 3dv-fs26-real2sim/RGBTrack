@@ -37,7 +37,7 @@ class DepthProWrapper:
 
         Returns depth: (H, W) float32 metric depth in metres
         """
-        f_px = float(K[0, 0])  # focal length in pixels
+        f_px = torch.tensor(float(K[0, 0]), device=self.device)
 
         pil_img = Image.fromarray(rgb)
         img_t   = self.transform(pil_img)
