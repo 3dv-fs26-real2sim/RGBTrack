@@ -25,6 +25,11 @@ try:
 except ImportError:
     Metric3DWrapper = None
 
+try:
+    from depth_pro_wrapper import DepthProWrapper
+except ImportError:
+    DepthProWrapper = None
+
 # ── Settings ───────────────────────────────────────────────────────────────────
 OCCLUSION_THRESHOLD = 0.90   # duck mask below this → occluded
 RECOVERY_THRESHOLD  = 0.95   # duck mask above this → recovered (re-init)
@@ -66,6 +71,8 @@ if __name__ == "__main__":
     parser.add_argument("--debug_dir", type=str, default=f"{code_dir}/debug")
     parser.add_argument("--metric3d_ckpt", type=str, default=None,
                         help="Path to Metric3D checkpoint. If set, uses Metric3D instead of VDA depth PNGs.")
+    parser.add_argument("--depth_pro_ckpt", type=str, default=None,
+                        help="Path to Depth Pro checkpoint. If set, uses Depth Pro instead of VDA depth PNGs.")
     args = parser.parse_args()
 
     set_logging_format()
@@ -96,6 +103,10 @@ if __name__ == "__main__":
         assert Metric3DWrapper is not None, "metric3d_wrapper not found"
         metric3d = Metric3DWrapper(checkpoint_path=args.metric3d_ckpt)
         logging.info("Metric3D loaded")
+    elif args.depth_pro_ckpt:
+        assert DepthProWrapper is not None, "depth_pro_wrapper not found"
+        metric3d = DepthProWrapper(checkpoint_path=args.depth_pro_ckpt)
+        logging.info("Depth Pro loaded")
 
     reader = YcbineoatReader(video_dir=args.test_scene_dir, shorter_side=None, zfar=np.inf)
 
