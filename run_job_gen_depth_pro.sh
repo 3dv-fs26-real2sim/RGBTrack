@@ -1,0 +1,22 @@
+#!/bin/bash
+#SBATCH --account=3dv
+#SBATCH --gres=gpu:1
+#SBATCH --time=02:00:00
+#SBATCH --output=/work/courses/3dv/team22/RGBTrack/logs/job_gen_depth_pro_%j.out
+#SBATCH --error=/work/courses/3dv/team22/RGBTrack/logs/job_gen_depth_pro_%j.err
+
+. /etc/profile.d/modules.sh
+module load cuda/12.8
+
+export PATH=/work/courses/3dv/team22/py310_env/bin:$PATH
+export CUDA_HOME=/cluster/data/cuda/12.8
+export PATH=$CUDA_HOME/bin:$PATH
+export LD_LIBRARY_PATH=$CUDA_HOME/lib64:$LD_LIBRARY_PATH
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+
+cd /work/courses/3dv/team22/RGBTrack
+mkdir -p logs
+
+/work/courses/3dv/team22/py310_env/bin/python generate_depth_pro_maps.py \
+    --test_scene_dir /work/courses/3dv/team22/foundationpose/data/20250804_104715 \
+    --depth_pro_ckpt /work/courses/3dv/team22/ml-depth-pro/checkpoints/depth_pro.pt
