@@ -1,14 +1,14 @@
 """
-FoundationPose duck tracker — mesh-vertex optical flow (option 5).
+FoundationPose duck tracker — ScoreNet rotation quality gate.
 
-During occlusion: duck mesh vertices projected with last known pose,
-tracked frame-to-frame with LK optical flow, solvePnPRansac recovers
-new rotation from (fixed 3D object verts → tracked 2D positions).
+ScoreNet (already loaded in est.scorer) is called every frame after
+track_one_new. The score at frame 0 is recorded as the baseline.
+When the score drops below baseline * (1 - SCORE_DROP_MARGIN), the
+rotation update is rejected and the last accepted rotation is held.
+Translation is always accepted from FoundationPose.
 
-No rotation blocking — OF result used directly when available,
-raw FoundationPose otherwise.
-
-Recovery re-init (binary_search_depth) when mask recovers to 0.95.
+Recovery re-init (binary_search_depth) fires when the duck mask
+recovers to 0.95 of its frame-0 area after an occlusion period.
 
 Requires:
 - test_scene_dir/depth/  — VDA depth PNGs (uint16 mm)
@@ -25,60 +25,28 @@ import numpy as np
 OCCLUSION_THRESHOLD = 0.90   # duck mask below this → occluded
 RECOVERY_THRESHOLD  = 0.95   # duck mask above this → recovered (re-init)
 
-OF_MAX_PTS          = 200    # max projected mesh vertices to track
-OF_MIN_DIST         = 5      # min pixel distance between selected points
+SCORE_DROP_MARGIN   = 0.35   # reject rotation if score < baseline * (1 - margin)
 
 LOG_INTERVAL        = 5
 # ──────────────────────────────────────────────────────────────────────────────
 
 
-def project_mesh_verts(verts_obj, pose, K, h, w, mask, max_pts, min_dist):
-    """
-    Project object-space vertices with pose, return visible (N,2) and (N,3).
-    Filters: positive depth, in-image bounds, on duck mask.
-    Subsamples to max_pts with approximate min_dist spacing.
-    """
-    R, t = pose[:3, :3], pose[:3, 3]
-    pts_cam = (R @ verts_obj.T).T + t          # (V,3) camera-space
-    depth_v  = pts_cam[:, 2]
-
-    # homogeneous image coords
-    u = pts_cam[:, 0] / depth_v * K[0, 0] + K[0, 2]
-    v = pts_cam[:, 1] / depth_v * K[1, 1] + K[1, 2]
-
-    ui = np.round(u).astype(int)
-    vi = np.round(v).astype(int)
-
-    in_bounds = (depth_v > 0.05) & (ui >= 0) & (ui < w) & (vi >= 0) & (vi < h)
-    idx = np.where(in_bounds)[0]
-    if len(idx) == 0:
-        return None, None
-
-    # filter to duck mask
-    on_mask = mask[vi[idx], ui[idx]] > 0
-    idx = idx[on_mask]
-    if len(idx) == 0:
-        return None, None
-
-    pts2d = np.stack([u[idx], v[idx]], axis=1).astype(np.float32)
-    pts3d = verts_obj[idx].astype(np.float32)
-
-    # greedy spatial subsample
-    if len(pts2d) > max_pts:
-        chosen = []
-        grid = {}
-        cell = int(min_dist)
-        for j in np.random.permutation(len(pts2d)):
-            cx, cy = int(pts2d[j, 0] // cell), int(pts2d[j, 1] // cell)
-            if (cx, cy) not in grid:
-                grid[(cx, cy)] = True
-                chosen.append(j)
-                if len(chosen) >= max_pts:
-                    break
-        pts2d = pts2d[chosen]
-        pts3d = pts3d[chosen]
-
-    return pts2d, pts3d
+def score_current_pose(est, rgb, depth, K):
+    """Run ScoreNet on est.pose_last. Returns scalar float score."""
+    pose_np = est.pose_last.cpu().numpy().reshape(1, 4, 4)
+    scores, _ = est.scorer.predict(
+        mesh=est.mesh,
+        rgb=rgb,
+        depth=depth,
+        K=K,
+        ob_in_cams=pose_np,
+        normal_map=None,
+        mesh_tensors=est.mesh_tensors,
+        glctx=est.glctx,
+        mesh_diameter=est.diameter,
+        get_vis=False,
+    )
+    return float(scores[0])
 
 
 if __name__ == "__main__":
@@ -119,14 +87,11 @@ if __name__ == "__main__":
 
     reader = YcbineoatReader(video_dir=args.test_scene_dir, shorter_side=None, zfar=np.inf)
 
-    frame0_mask_area = None
-    depth_scale      = 1.0
-    was_occluded     = False
-
-    # Optical flow state
-    of_prev_gray = None
-    of_pts       = None   # (N,2) float32 — current tracked 2D positions
-    of_3d_pts    = None   # (N,3) float32 — fixed object-space 3D positions
+    frame0_mask_area   = None
+    depth_scale        = 1.0
+    baseline_score     = None
+    last_good_duck_rot = None
+    was_occluded       = False
 
     for i in range(len(reader.color_files)):
         color = reader.get_color(i)
@@ -139,98 +104,61 @@ if __name__ == "__main__":
         mask = cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE)
         mask = (mask > 127).astype(np.uint8)
 
-        gray = cv2.cvtColor(color, cv2.COLOR_RGB2GRAY)
-
         if i == 0:
             pose = binary_search_depth(est, mesh, color, mask.astype(bool), reader.K, debug=True)
             logging.info(f"Initial duck pose:\n{pose}")
-            frame0_mask_area = float(mask.sum())
+            frame0_mask_area   = float(mask.sum())
+            last_good_duck_rot = pose[:3, :3].copy()
             obj_pixels  = mask > 0
             vda_z       = depth[obj_pixels].mean() if obj_pixels.any() else 1.0
             bsd_z       = float(pose[2, 3])
             depth_scale = bsd_z / vda_z if vda_z > 0 else 1.0
             logging.info(f"Depth scale: {depth_scale:.3f}")
+
+            # Record ScoreNet baseline at init
+            baseline_score = score_current_pose(est, color, depth * depth_scale, reader.K)
+            logging.info(f"Baseline ScoreNet score: {baseline_score:.4f}")
+
         else:
             mask_area = float(mask.sum())
             occluded  = (frame0_mask_area > 0) and (mask_area < OCCLUSION_THRESHOLD * frame0_mask_area)
-            h_img, w_img = mask.shape[:2]
+            d_scaled  = depth * depth_scale
 
-            # Always run FP (translation always used; rotation below)
+            # Always run FP (translation always used)
             pose = est.track_one_new(
-                rgb=color, depth=depth * depth_scale, K=reader.K,
+                rgb=color, depth=d_scaled, K=reader.K,
                 iteration=args.track_refine_iter, mask=mask
             )
 
-            # ── Optical flow ───────────────────────────────────────────────────
-            of_rot = None
+            # ── ScoreNet quality gate ──────────────────────────────────────────
+            current_score = score_current_pose(est, color, d_scaled, reader.K)
+            score_thresh  = baseline_score * (1.0 - SCORE_DROP_MARGIN)
+            rot_accepted  = current_score >= score_thresh
 
-            if not occluded:
-                # Refresh projected mesh keypoints on clean duck view
-                pts2d, pts3d = project_mesh_verts(
-                    mesh.vertices, pose, reader.K, h_img, w_img, mask,
-                    OF_MAX_PTS, OF_MIN_DIST)
-                if pts2d is not None:
-                    of_pts    = pts2d
-                    of_3d_pts = pts3d
+            if rot_accepted:
+                last_good_duck_rot = pose[:3, :3].copy()
+            else:
+                pose[:3, :3] = last_good_duck_rot  # hold last accepted rotation
 
-            elif occluded and of_pts is not None and of_prev_gray is not None and len(of_pts) >= 6:
-                # Track projected mesh verts with LK
-                new_pts, status, _ = cv2.calcOpticalFlowPyrLK(
-                    of_prev_gray, gray,
-                    of_pts.reshape(-1, 1, 2), None,
-                    winSize=(21, 21), maxLevel=3)
-
-                if new_pts is not None and status is not None:
-                    ok       = status.ravel().astype(bool)
-                    good_2d  = new_pts.reshape(-1, 2)[ok]
-                    good_3d  = of_3d_pts[ok]
-
-                    if len(good_3d) >= 6:
-                        try:
-                            ret, rvec, tvec, inliers = cv2.solvePnPRansac(
-                                good_3d, good_2d,
-                                reader.K.astype(np.float64), None,
-                                iterationsCount=100, reprojectionError=4.0)
-                            if ret and inliers is not None and len(inliers) >= 4:
-                                R_of, _ = cv2.Rodrigues(rvec)
-                                of_rot = R_of
-                                logging.debug(f"[frame {i}] OF solvePnP ok — "
-                                              f"{len(inliers)}/{len(good_3d)} inliers")
-                        except cv2.error:
-                            pass
-
-                    # Keep tracking the subset that survived LK
-                    of_pts    = good_2d
-                    of_3d_pts = good_3d
-
-            # Update previous frame
-            of_prev_gray = gray.copy()
-
-            # ── Pose assembly ──────────────────────────────────────────────────
+            # ── Recovery re-init after occlusion ──────────────────────────────
             if occluded:
-                if of_rot is not None:
-                    pose[:3, :3] = of_rot   # OF solvePnP result
-                # else: raw FP rotation — no blocking, let it run
-
                 was_occluded = True
-
-            elif was_occluded and mask_area >= RECOVERY_THRESHOLD * frame0_mask_area:
-                logging.info(f"[frame {i}] Recovery re-init")
-                pose = binary_search_depth(
-                    est, mesh, color, mask.astype(bool), reader.K, debug=False)
-                was_occluded = False
-                of_pts       = None   # force fresh keypoint detection next frame
-
             elif was_occluded:
-                # partially recovered — FP runs free (no blocking)
-                pass
-
-            # else: fully unoccluded, FP has full control
+                if mask_area >= RECOVERY_THRESHOLD * frame0_mask_area:
+                    logging.info(f"[frame {i}] Recovery re-init")
+                    pose = binary_search_depth(
+                        est, mesh, color, mask.astype(bool), reader.K, debug=False)
+                    last_good_duck_rot = pose[:3, :3].copy()
+                    # rescore after re-init to keep baseline meaningful
+                    baseline_score = max(
+                        baseline_score,
+                        score_current_pose(est, color, d_scaled, reader.K))
+                    was_occluded = False
 
             if i % LOG_INTERVAL == 0:
-                of_n = len(of_pts) if of_pts is not None else 0
-                logging.info(f"[frame {i}] occluded={occluded}  "
-                             f"of_pts={of_n}  of_rot={'yes' if of_rot is not None else 'no'}")
+                logging.info(f"[frame {i}] score={current_score:.4f}  "
+                             f"thresh={score_thresh:.4f}  accepted={rot_accepted}  "
+                             f"occluded={occluded}")
 
         t2 = time.time()
         os.makedirs(f"{debug_dir}/ob_in_cam", exist_ok=True)
