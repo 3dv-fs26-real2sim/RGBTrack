@@ -128,6 +128,14 @@ if __name__ == "__main__":
         mask = cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE)
         mask = (mask > 127).astype(np.uint8)
 
+        # ── Hand mask (for subtraction during grasp) ──────────────────────────
+        hand_mask_path = os.path.join(args.test_scene_dir, "hand_masks", f"{reader.id_strs[i]}.png")
+        hand_mask = None
+        if os.path.exists(hand_mask_path):
+            hm = cv2.imread(hand_mask_path, cv2.IMREAD_GRAYSCALE)
+            if hm is not None:
+                hand_mask = (hm > 127).astype(np.uint8)
+
         # ── MediaPipe (every frame, CPU) ──────────────────────────────────────
         hand_rot_delta = mp_hand.update(color)
         hand_on_mask   = mp_hand.on_mask(mask)
@@ -147,9 +155,15 @@ if __name__ == "__main__":
             mask_area = float(mask.sum())
             occluded  = (frame0_mask_area > 0) and (mask_area < OCCLUSION_THRESHOLD * frame0_mask_area)
 
+            # Subtract hand from duck mask during active grasp
+            if grasp_entered and not grasp_done and hand_mask is not None:
+                track_mask = np.logical_and(mask, np.logical_not(hand_mask)).astype(np.uint8)
+            else:
+                track_mask = mask
+
             pose = est.track_one_new(
                 rgb=color, depth=depth * depth_scale, K=reader.K,
-                iteration=args.track_refine_iter, mask=mask
+                iteration=args.track_refine_iter, mask=track_mask
             )
 
             # ── Grasp / release detection ──────────────────────────────────────
