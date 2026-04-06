@@ -23,6 +23,7 @@ import argparse
 from tools import *
 import numpy as np
 from scipy.spatial.transform import Rotation as ScipyR
+from mediapipe_hand_tracker import MediaPipeHandTracker
 
 SAVE_VIDEO = False
 
@@ -133,11 +134,13 @@ if __name__ == "__main__":
         model_pts=mesh.vertices, model_normals=mesh.vertex_normals, mesh=mesh,
         scorer=scorer, refiner=refiner, debug_dir=debug_dir, debug=debug, glctx=glctx,
     )
-    # Hand estimator (separate instance)
+    # Hand estimator (for distance measurement only)
     est_hand = FoundationPose(
         model_pts=hand_mesh.vertices, model_normals=hand_mesh.vertex_normals, mesh=hand_mesh,
         scorer=scorer, refiner=refiner, debug_dir=debug_dir, debug=0, glctx=glctx,
     )
+    # MediaPipe hand tracker (for rotation delta — runs on CPU, no mask needed)
+    mp_hand = MediaPipeHandTracker()
     logging.info("estimators initialized")
 
     reader = YcbineoatReader(video_dir=args.test_scene_dir, shorter_side=None, zfar=np.inf)
@@ -175,22 +178,18 @@ if __name__ == "__main__":
             hand_mask = cv2.imread(hand_mask_path, cv2.IMREAD_GRAYSCALE)
             hand_mask = (hand_mask > 127).astype(np.uint8)
 
-        # ── Hand tracker ──────────────────────────────────────────────────────
+        # ── MediaPipe rotation delta (every frame, CPU) ───────────────────────
+        hand_rot_delta = mp_hand.update(color)  # None if hand not detected
+
+        # ── Hand pose tracker (distance measurement only) ─────────────────────
         if i == HAND_SEED_FRAME and hand_mask_exists and hand_mask.sum() > 100:
-            logging.info(f"[frame {i}] Initializing hand tracker")
+            logging.info(f"[frame {i}] Initializing hand distance tracker")
             hand_pose_last = binary_search_depth(est_hand, hand_mesh, color, hand_mask.astype(bool), reader.K, debug=False)
-            hand_rot_last = hand_pose_last[:3, :3].copy()
-            hand_rot_delta = None
         elif i > HAND_SEED_FRAME and hand_pose_last is not None and hand_mask_exists:
             hand_pose_last = est_hand.track_one_new(
                 rgb=color, depth=depth * depth_scale, K=reader.K,
                 iteration=args.track_refine_iter, mask=hand_mask
             )
-            hand_rot_new = hand_pose_last[:3, :3].copy()
-            hand_rot_delta = hand_rot_new @ hand_rot_last.T  # rotation change this frame
-            hand_rot_last = hand_rot_new
-        else:
-            hand_rot_delta = None
 
         # ── Duck tracker ──────────────────────────────────────────────────────
         if i == 0:
@@ -310,3 +309,5 @@ if __name__ == "__main__":
         if debug >= 2:
             os.makedirs(f"{debug_dir}/track_vis", exist_ok=True)
             imageio.imwrite(f"{debug_dir}/track_vis/{reader.id_strs[i]}.png", vis)
+
+    mp_hand.close()
