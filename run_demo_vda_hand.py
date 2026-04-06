@@ -156,15 +156,19 @@ if __name__ == "__main__":
                 iteration=args.track_refine_iter, mask=mask
             )
 
-            # ── ScoreNet quality gate ──────────────────────────────────────────
-            current_score = score_current_pose(est, color, d_scaled, reader.K)
-            score_thresh  = baseline_score * (1.0 - SCORE_DROP_MARGIN)
-            rot_accepted  = current_score >= score_thresh
-
-            if rot_accepted:
-                last_good_duck_rot = pose[:3, :3].copy()
+            # ── ScoreNet quality gate (only when occluded — saves ~half the fps) ─
+            if occluded:
+                current_score = score_current_pose(est, color, d_scaled, reader.K)
+                score_thresh  = baseline_score * (1.0 - SCORE_DROP_MARGIN)
+                rot_accepted  = current_score >= score_thresh
+                if not rot_accepted:
+                    pose[:3, :3] = last_good_duck_rot
+                else:
+                    last_good_duck_rot = pose[:3, :3].copy()
             else:
-                pose[:3, :3] = last_good_duck_rot  # hold last accepted rotation
+                current_score = None
+                rot_accepted  = True
+                last_good_duck_rot = pose[:3, :3].copy()
 
             # ── Recovery re-init after occlusion ──────────────────────────────
             if occluded:
@@ -182,9 +186,9 @@ if __name__ == "__main__":
                     was_occluded = False
 
             if i % LOG_INTERVAL == 0:
-                logging.info(f"[frame {i}] score={current_score:.4f}  "
-                             f"thresh={score_thresh:.4f}  accepted={rot_accepted}  "
-                             f"occluded={occluded}")
+                score_str = f"{current_score:.4f}" if current_score is not None else "n/a"
+                logging.info(f"[frame {i}] score={score_str}  "
+                             f"accepted={rot_accepted}  occluded={occluded}")
 
         t2 = time.time()
         os.makedirs(f"{debug_dir}/ob_in_cam", exist_ok=True)
