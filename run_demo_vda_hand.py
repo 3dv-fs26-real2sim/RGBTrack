@@ -110,7 +110,8 @@ if __name__ == "__main__":
     # Grasp state (one-shot)
     grasp_done         = False   # True after first grasp+release cycle — disables hand logic
     hand_released      = False   # release detected, waiting for occlusion to clear
-    dist_history       = []      # rolling buffer of last (RELEASE_CONSEC+1) reliable distances
+    grasp_entered      = False   # True once dist dropped below 0.11m (confirmed contact)
+    dist_history       = []      # rolling buffer of last (RELEASE_CONSEC+1) values > 0.13m
 
     for i in range(len(reader.color_files)):
         color = reader.get_color(i)
@@ -176,14 +177,22 @@ if __name__ == "__main__":
 
             # ── Release detection (only while grasp active) ────────────────────
             if not grasp_done and not hand_released and occluded and hand_duck_dist is not None:
-                if hand_duck_dist >= DIST_IGNORE_BELOW:
-                    dist_history.append(hand_duck_dist)
-                    if len(dist_history) > RELEASE_CONSEC + 1:
-                        dist_history.pop(0)
+                # Gate: confirmed contact required before release can fire
+                if hand_duck_dist < 0.11:
+                    grasp_entered = True
 
-                # Release: current dist > threshold AND avg(last N) > anchor (N+1 th last)
+                if grasp_entered:
+                    if hand_duck_dist > DIST_RELEASE_ABOVE:
+                        # Accumulate moving-away evidence
+                        dist_history.append(hand_duck_dist)
+                        if len(dist_history) > RELEASE_CONSEC + 1:
+                            dist_history.pop(0)
+                    else:
+                        # Dipped back below threshold — restart history
+                        dist_history.clear()
+
+                # Release: avg(last N) > anchor (N+1 th last)
                 if (len(dist_history) == RELEASE_CONSEC + 1
-                        and dist_history[-1] > DIST_RELEASE_ABOVE
                         and sum(dist_history[1:]) / RELEASE_CONSEC > dist_history[0]):
                     hand_released = True
                     logging.info(f"[frame {i}] Release detected — dist {hand_duck_dist:.4f} m  "
