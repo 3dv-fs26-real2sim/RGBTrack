@@ -43,9 +43,16 @@ def rotation_delta_deg(R1, R2):
     angle = np.arccos(np.clip((np.trace(R_rel) - 1) / 2, -1, 1))
     return np.degrees(angle)
 
+ROT_AVG_WINDOW      = 3     # frames to average before applying rotation
 CONSISTENCY_WINDOW  = 3     # frames of history to establish trend
 CONSISTENCY_MIN_DOT = 0.7   # min axis alignment to be considered consistent (~45 deg)
 CLIP_INCONSISTENT   = 1.0   # max deg/frame when motion is inconsistent with trend
+
+def average_rotations(R_ref, R_list):
+    """Average a list of rotation matrices relative to R_ref via rotvec mean."""
+    vecs = [ScipyR.from_matrix(R_ref.T @ R).as_rotvec() for R in R_list]
+    mean_vec = np.mean(vecs, axis=0)
+    return R_ref @ ScipyR.from_rotvec(mean_vec).as_matrix()
 
 def clip_rotation_consistent(R_prev, R_new, max_deg, vel_history):
     """
@@ -149,6 +156,7 @@ if __name__ == "__main__":
     grasp_entered      = False   # True once dist dropped below 0.11m (confirmed contact)
     dist_history       = []      # rolling buffer of last (RELEASE_CONSEC+1) reliable distances
     vel_history        = []      # rolling buffer of recent rotation vectors for consistency check
+    raw_rot_buffer     = []      # rolling buffer of raw tracked rotations for averaging
 
     for i in range(len(reader.color_files)):
         color = reader.get_color(i)
@@ -236,8 +244,12 @@ if __name__ == "__main__":
             # ── State machine ──────────────────────────────────────────────────
             if occluded:
                 if hand_released or grasp_done:
-                    # Clip to 5 deg/frame — allows slow drift, blocks spikes
-                    clipped = clip_rotation_consistent(last_good_duck_rot, pose[:3, :3], 5.0, vel_history)
+                    # Accumulate raw rotations, apply 3-frame average then clip
+                    raw_rot_buffer.append(pose[:3, :3].copy())
+                    if len(raw_rot_buffer) > ROT_AVG_WINDOW:
+                        raw_rot_buffer.pop(0)
+                    avg_rot = average_rotations(last_good_duck_rot, raw_rot_buffer)
+                    clipped = clip_rotation_consistent(last_good_duck_rot, avg_rot, 5.0, vel_history)
                     pose[:3, :3] = clipped
                     last_good_duck_rot = clipped
                 elif hand_rot_delta is not None:
@@ -246,8 +258,12 @@ if __name__ == "__main__":
                     pose[:3, :3] = new_rot
                     last_good_duck_rot = new_rot
                 else:
-                    # No hand data — clip fallback
-                    clipped = clip_rotation_consistent(last_good_duck_rot, pose[:3, :3], 5.0, vel_history)
+                    # No hand data — average then clip fallback
+                    raw_rot_buffer.append(pose[:3, :3].copy())
+                    if len(raw_rot_buffer) > ROT_AVG_WINDOW:
+                        raw_rot_buffer.pop(0)
+                    avg_rot = average_rotations(last_good_duck_rot, raw_rot_buffer)
+                    clipped = clip_rotation_consistent(last_good_duck_rot, avg_rot, 5.0, vel_history)
                     pose[:3, :3] = clipped
                     last_good_duck_rot = clipped
                 was_occluded = True
@@ -257,13 +273,19 @@ if __name__ == "__main__":
                 pose = binary_search_depth(est, mesh, color, mask.astype(bool), reader.K, debug=False)
                 last_good_duck_rot = pose[:3, :3].copy()
                 was_occluded = False
+                raw_rot_buffer.clear()
+                vel_history.clear()
                 if hand_released:
                     grasp_done = True
                     hand_released = False
                     logging.info(f"[frame {i}] Grasp cycle complete — hand logic disabled")
 
             elif was_occluded:
-                clipped = clip_rotation_consistent(last_good_duck_rot, pose[:3, :3], 5.0, vel_history)
+                raw_rot_buffer.append(pose[:3, :3].copy())
+                if len(raw_rot_buffer) > ROT_AVG_WINDOW:
+                    raw_rot_buffer.pop(0)
+                avg_rot = average_rotations(last_good_duck_rot, raw_rot_buffer)
+                clipped = clip_rotation_consistent(last_good_duck_rot, avg_rot, 5.0, vel_history)
                 pose[:3, :3] = clipped
                 last_good_duck_rot = clipped
 
