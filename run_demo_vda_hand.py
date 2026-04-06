@@ -156,16 +156,19 @@ if __name__ == "__main__":
             mask_area = float(mask.sum())
             occluded = (frame0_mask_area > 0) and (mask_area < OCCLUSION_THRESHOLD * frame0_mask_area)
 
-            # Choose tracking mask
+            # Choose tracking mask and method
             if occluded and not grasp_done and not hand_released and hand_mask is not None:
+                # Combined mask, depth-free — matches XMem+RGBTrack behaviour
                 track_mask = np.logical_or(mask, hand_mask).astype(np.uint8)
+                pose = est.track_one_new_without_depth(
+                    rgb=color, K=reader.K,
+                    iteration=args.track_refine_iter, mask=track_mask
+                )
             else:
-                track_mask = mask
-
-            pose = est.track_one_new(
-                rgb=color, depth=depth * depth_scale, K=reader.K,
-                iteration=args.track_refine_iter, mask=track_mask
-            )
+                pose = est.track_one_new(
+                    rgb=color, depth=depth * depth_scale, K=reader.K,
+                    iteration=args.track_refine_iter, mask=mask
+                )
 
             # ── Hand-duck distance ─────────────────────────────────────────────
             hand_duck_dist = None
