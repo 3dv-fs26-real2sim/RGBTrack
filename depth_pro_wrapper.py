@@ -21,10 +21,9 @@ DEPTH_PRO_DIR = "/work/courses/3dv/team22/ml-depth-pro"
 class DepthProWrapper:
     def __init__(self, checkpoint_path=f"{DEPTH_PRO_DIR}/checkpoints/depth_pro.pt", device="cuda"):
         self.device = device
-        from depth_pro.depth_pro import DEFAULT_MONODEPTH_CONFIG_DICT, DepthProConfig
-        config = DepthProConfig(
-            **{**DEFAULT_MONODEPTH_CONFIG_DICT, "checkpoint_uri": checkpoint_path}
-        )
+        import dataclasses
+        from depth_pro.depth_pro import DEFAULT_MONODEPTH_CONFIG_DICT
+        config = dataclasses.replace(DEFAULT_MONODEPTH_CONFIG_DICT, checkpoint_uri=checkpoint_path)
         self.model, self.transform = depth_pro.create_model_and_transforms(
             config=config,
             device=torch.device(device),
