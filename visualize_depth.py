@@ -83,6 +83,8 @@ def main():
                         default="/work/courses/3dv/team22/ml-depth-pro/checkpoints/depth_pro.pt")
     parser.add_argument("--out_video", type=str, default=None,
                         help="Output AVI path. Defaults to test_scene_dir/depth_<source>.avi")
+    parser.add_argument("--depth_pro_maps_dir", type=str, default=None,
+                        help="Directory of pre-generated depth PNGs when using --source depth_pro_maps")
     parser.add_argument("--fps", type=int, default=15)
     parser.add_argument("--depth_scale", type=float, default=None,
                         help="Scale factor for VDA/PNG depths (auto-computed if not set)")
@@ -148,7 +150,8 @@ def _get_depth(i, color, reader, args, depth_model):
         return raw.astype(np.float32) / 1000.0
 
     elif args.source == "depth_pro_maps":
-        path = os.path.join(args.test_scene_dir, "depth_pro", f"{reader.id_strs[i]}.png")
+        maps_dir = args.depth_pro_maps_dir or os.path.join(args.test_scene_dir, "depth_pro")
+        path = os.path.join(maps_dir, f"{reader.id_strs[i]}.png")
         raw  = cv2.imread(path, cv2.IMREAD_UNCHANGED)
         if raw is None:
             return None
