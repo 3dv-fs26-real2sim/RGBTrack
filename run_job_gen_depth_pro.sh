@@ -1,6 +1,5 @@
 #!/bin/bash
 #SBATCH --account=3dv
-#SBATCH --gres=gpu:1
 #SBATCH --time=02:00:00
 #SBATCH --output=/work/courses/3dv/team22/RGBTrack/logs/job_gen_depth_pro_%j.out
 #SBATCH --error=/work/courses/3dv/team22/RGBTrack/logs/job_gen_depth_pro_%j.err
