@@ -4,7 +4,7 @@ FoundationPose + MediaPipe Hands duck tracker.
 Rotation state machine during occlusion:
   - STATIC:  hand not moving → lock rotation (last_good_duck_rot)
   - MOVING:  hand moving (MediaPipe delta > threshold) → accumulate deltas
-             from rot_at_move_start. FoundationPose only used for translation.
+             from rot_at_move_start. Optical flow used when MP not available.
   - UNOCCLUDED: re-init with binary_search_depth, give full control to FP.
 
 Motion detection: MediaPipe delta magnitude > MOTION_THRESHOLD_DEG for
@@ -12,6 +12,10 @@ MOTION_CONFIRM frames → MOVING. Below MOTION_STOP_DEG for STOP_CONFIRM
 frames → STATIC again.
 
 One-shot: after first unocclude following a grasp → grasp_done, hand logic off.
+
+Optical flow (option 4): goodFeaturesToTrack + LK on duck pixels while
+unoccluded; solvePnPRansac during occlusion to recover per-frame rotation
+delta. Used as fill-in on non-MediaPipe frames in MOVING state.
 
 Requires:
 - test_scene_dir/depth/  — VDA depth PNGs (uint16 mm)
@@ -38,6 +42,12 @@ MOTION_THRESHOLD_DEG = 1.0    # deg/frame — MediaPipe delta above this = movin
 MOTION_CONFIRM       = 2      # consecutive frames above threshold to enter MOVING
 MOTION_STOP_DEG      = 0.3    # deg/frame — delta below this = stopped
 STOP_CONFIRM         = 4      # consecutive frames below stop threshold to enter STATIC
+MAX_MID_AIR_REINITS  = 1      # max re-inits allowed while still occluded
+
+# Optical flow settings
+OF_MAX_PTS           = 100    # max keypoints to track
+OF_QUALITY           = 0.01   # goodFeaturesToTrack quality level
+OF_MIN_DIST          = 5      # min distance between keypoints (px)
 
 LOG_INTERVAL         = 5
 # ──────────────────────────────────────────────────────────────────────────────
@@ -101,9 +111,16 @@ if __name__ == "__main__":
     # Motion state
     is_moving          = False   # currently in MOVING state
     rot_at_move_start  = None    # duck rotation when motion started
-    accumulated_rot    = None    # product of all MediaPipe deltas since move start
+    accumulated_rot    = None    # product of all deltas since move start
     moving_count       = 0       # consecutive frames above motion threshold
     stopped_count      = 0       # consecutive frames below stop threshold
+    mid_air_reinit_count = 0     # number of mid-air re-inits used so far
+
+    # Optical flow state
+    of_prev_gray  = None         # grayscale of previous frame
+    of_pts        = None         # current tracked 2D keypoints (N, 2) float32
+    of_3d_pts     = None         # 3D camera-space positions at detection time (N, 3) float32
+    of_R_prev     = None         # previous solvePnP result (for computing delta)
 
     for i in range(len(reader.color_files)):
         color = reader.get_color(i)
@@ -116,9 +133,13 @@ if __name__ == "__main__":
         mask = cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE)
         mask = (mask > 127).astype(np.uint8)
 
-        # ── MediaPipe (every frame, CPU) ──────────────────────────────────────
-        hand_rot_delta = mp_hand.update(color)
-        hand_on_mask   = mp_hand.on_mask(mask)
+        # ── MediaPipe (every 3 frames, CPU) ───────────────────────────────────
+        if i % 3 == 0:
+            hand_rot_delta = mp_hand.update(color)
+            hand_on_mask   = mp_hand.on_mask(mask)
+        else:
+            hand_rot_delta = None
+            hand_on_mask   = mp_hand.on_mask(mask)  # cheap, keep every frame
 
         # ── Duck tracker ──────────────────────────────────────────────────────
         if i == 0:
@@ -134,12 +155,66 @@ if __name__ == "__main__":
         else:
             mask_area = float(mask.sum())
             occluded  = (frame0_mask_area > 0) and (mask_area < OCCLUSION_THRESHOLD * frame0_mask_area)
+            gray      = cv2.cvtColor(color, cv2.COLOR_RGB2GRAY)
 
             # Always run FP for translation; rotation overridden below when needed
             pose = est.track_one_new(
                 rgb=color, depth=depth * depth_scale, K=reader.K,
                 iteration=args.track_refine_iter, mask=mask
             )
+
+            # ── Optical flow: refresh keypoints on clean duck view ─────────────
+            if not occluded and not was_occluded:
+                roi      = (mask > 0).astype(np.uint8) * 255
+                new_pts  = cv2.goodFeaturesToTrack(
+                    gray, maxCorners=OF_MAX_PTS, qualityLevel=OF_QUALITY,
+                    minDistance=OF_MIN_DIST, mask=roi)
+                if new_pts is not None:
+                    pts   = new_pts.reshape(-1, 2)
+                    d_sc  = depth * depth_scale
+                    v_pts, v_3d = [], []
+                    for pt in pts:
+                        u = int(np.clip(round(pt[0]), 0, d_sc.shape[1] - 1))
+                        v = int(np.clip(round(pt[1]), 0, d_sc.shape[0] - 1))
+                        d = float(d_sc[v, u])
+                        if d > 0.1:
+                            X = (u - reader.K[0, 2]) * d / reader.K[0, 0]
+                            Y = (v - reader.K[1, 2]) * d / reader.K[1, 1]
+                            v_pts.append(pt)
+                            v_3d.append([X, Y, d])
+                    if v_pts:
+                        of_pts    = np.array(v_pts, dtype=np.float32)
+                        of_3d_pts = np.array(v_3d,  dtype=np.float32)
+                        of_R_prev = None  # reset pose reference for delta computation
+                of_prev_gray = gray.copy()
+
+            # ── Optical flow: track + estimate rotation delta ──────────────────
+            of_rot_delta = None
+            if occluded and of_pts is not None and of_prev_gray is not None and len(of_pts) >= 4:
+                new_pts, status, _ = cv2.calcOpticalFlowPyrLK(
+                    of_prev_gray, gray,
+                    of_pts.reshape(-1, 1, 2).astype(np.float32), None)
+                if new_pts is not None and status is not None:
+                    ok       = status.ravel().astype(bool)
+                    good_2d  = new_pts.reshape(-1, 2)[ok]
+                    good_3d  = of_3d_pts[ok]
+                    if len(good_3d) >= 4:
+                        try:
+                            ret, rvec, tvec, inliers = cv2.solvePnPRansac(
+                                good_3d, good_2d,
+                                reader.K.astype(np.float64), None)
+                            if ret and inliers is not None and len(inliers) >= 4:
+                                R_curr, _ = cv2.Rodrigues(rvec)
+                                if of_R_prev is not None:
+                                    of_rot_delta = R_curr @ of_R_prev.T
+                                of_R_prev = R_curr
+                        except cv2.error:
+                            pass
+                    of_pts    = good_2d
+                    of_3d_pts = good_3d
+                of_prev_gray = gray.copy()
+            elif not occluded:
+                of_prev_gray = gray.copy()
 
             # ── Grasp / release detection ──────────────────────────────────────
             if not grasp_done and not hand_released:
@@ -178,7 +253,19 @@ if __name__ == "__main__":
                         if stopped_count >= STOP_CONFIRM:
                             is_moving     = False
                             stopped_count = 0
-                            logging.info(f"[frame {i}] Motion stopped")
+                            if mid_air_reinit_count < MAX_MID_AIR_REINITS:
+                                logging.info(f"[frame {i}] Motion stopped — mid-air re-init "
+                                             f"({mid_air_reinit_count + 1}/{MAX_MID_AIR_REINITS})")
+                                pose = binary_search_depth(
+                                    est, mesh, color, mask.astype(bool), reader.K, debug=2)
+                                last_good_duck_rot   = pose[:3, :3].copy()
+                                mid_air_reinit_count += 1
+                            else:
+                                logging.info(f"[frame {i}] Motion stopped — max mid-air re-inits "
+                                             f"reached, locking rotation")
+                            accumulated_rot   = None
+                            rot_at_move_start = None
+                            of_R_prev         = None  # reset OF delta reference
                     else:
                         stopped_count = 0
             else:
@@ -194,12 +281,17 @@ if __name__ == "__main__":
                     # Post-release: freeze rotation
                     pose[:3, :3] = last_good_duck_rot
 
-                elif grasp_entered and is_moving and hand_rot_delta is not None:
-                    # MOVING: accumulate MediaPipe deltas from move-start rotation
-                    accumulated_rot = hand_rot_delta @ accumulated_rot
-                    new_rot = accumulated_rot @ rot_at_move_start
-                    pose[:3, :3] = new_rot
-                    last_good_duck_rot = new_rot
+                elif grasp_entered and is_moving:
+                    # MOVING: prefer OF delta (direct duck measurement),
+                    #         fall back to MediaPipe palm delta
+                    rot_delta = of_rot_delta if of_rot_delta is not None else hand_rot_delta
+                    if rot_delta is not None:
+                        accumulated_rot    = rot_delta @ accumulated_rot
+                        new_rot            = accumulated_rot @ rot_at_move_start
+                        pose[:3, :3]       = new_rot
+                        last_good_duck_rot = new_rot
+                    else:
+                        pose[:3, :3] = last_good_duck_rot
 
                 elif grasp_entered:
                     # STATIC during grasp: lock rotation
@@ -214,13 +306,15 @@ if __name__ == "__main__":
             elif was_occluded and mask_area >= RECOVERY_THRESHOLD * frame0_mask_area:
                 logging.info(f"[frame {i}] Recovery re-init")
                 pose = binary_search_depth(est, mesh, color, mask.astype(bool), reader.K, debug=False)
-                last_good_duck_rot = pose[:3, :3].copy()
-                was_occluded  = False
-                is_moving     = False
-                moving_count  = 0
-                stopped_count = 0
-                accumulated_rot   = None
-                rot_at_move_start = None
+                last_good_duck_rot   = pose[:3, :3].copy()
+                was_occluded         = False
+                is_moving            = False
+                moving_count         = 0
+                stopped_count        = 0
+                mid_air_reinit_count = 0
+                accumulated_rot      = None
+                rot_at_move_start    = None
+                of_R_prev            = None
                 if hand_released:
                     grasp_done    = True
                     hand_released = False
@@ -235,9 +329,11 @@ if __name__ == "__main__":
                 last_good_duck_rot = pose[:3, :3].copy()
 
             if i % LOG_INTERVAL == 0:
+                of_pts_n = len(of_pts) if of_pts is not None else 0
                 logging.info(f"[frame {i}] occluded={occluded}  on_mask={hand_on_mask}  "
                              f"is_moving={is_moving}  grasp_entered={grasp_entered}  "
-                             f"hand_released={hand_released}  grasp_done={grasp_done}")
+                             f"hand_released={hand_released}  grasp_done={grasp_done}  "
+                             f"of_pts={of_pts_n}  of_delta={'yes' if of_rot_delta is not None else 'no'}")
 
         t2 = time.time()
         os.makedirs(f"{debug_dir}/ob_in_cam", exist_ok=True)
