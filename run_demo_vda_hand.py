@@ -226,15 +226,18 @@ if __name__ == "__main__":
                     grasp_entered = True
 
                 if grasp_entered:
-                    if hand_duck_dist >= DIST_IGNORE_BELOW:
+                    if hand_duck_dist > DIST_RELEASE_ABOVE:
+                        # Only accumulate values clearly above threshold
                         dist_history.append(hand_duck_dist)
                         if len(dist_history) > RELEASE_CONSEC + 1:
                             dist_history.pop(0)
+                    else:
+                        # Dipped back below threshold — restart (anchor must be clean)
+                        dist_history.clear()
 
-                # Release: current dist > threshold AND avg(last N) > anchor (N+1 th last)
+                # Release: all N+1 entries > threshold AND avg(last N) > anchor
                 if (grasp_entered
                         and len(dist_history) == RELEASE_CONSEC + 1
-                        and dist_history[-1] > DIST_RELEASE_ABOVE
                         and sum(dist_history[1:]) / RELEASE_CONSEC > dist_history[0]):
                     hand_released = True
                     logging.info(f"[frame {i}] Release detected — dist {hand_duck_dist:.4f} m  "
