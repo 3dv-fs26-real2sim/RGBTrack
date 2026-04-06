@@ -20,6 +20,10 @@ from datareader import *
 import argparse
 from tools import *
 import numpy as np
+try:
+    from metric3d_wrapper import Metric3DWrapper
+except ImportError:
+    Metric3DWrapper = None
 
 # ── Settings ───────────────────────────────────────────────────────────────────
 OCCLUSION_THRESHOLD = 0.90   # duck mask below this → occluded
@@ -60,6 +64,8 @@ if __name__ == "__main__":
     parser.add_argument("--track_refine_iter", type=int, default=1)
     parser.add_argument("--debug", type=int, default=1)
     parser.add_argument("--debug_dir", type=str, default=f"{code_dir}/debug")
+    parser.add_argument("--metric3d_ckpt", type=str, default=None,
+                        help="Path to Metric3D checkpoint. If set, uses Metric3D instead of VDA depth PNGs.")
     args = parser.parse_args()
 
     set_logging_format()
@@ -85,6 +91,12 @@ if __name__ == "__main__":
     )
     logging.info("estimator initialized")
 
+    metric3d = None
+    if args.metric3d_ckpt:
+        assert Metric3DWrapper is not None, "metric3d_wrapper not found"
+        metric3d = Metric3DWrapper(checkpoint_path=args.metric3d_ckpt)
+        logging.info("Metric3D loaded")
+
     reader = YcbineoatReader(video_dir=args.test_scene_dir, shorter_side=None, zfar=np.inf)
 
     frame0_mask_area   = None
@@ -97,8 +109,11 @@ if __name__ == "__main__":
         color = reader.get_color(i)
         t1    = time.time()
 
-        depth_path = os.path.join(args.test_scene_dir, "depth", f"{reader.id_strs[i]}.png")
-        depth = cv2.imread(depth_path, cv2.IMREAD_UNCHANGED).astype(np.float32) / 1000.0
+        if metric3d is not None:
+            depth = metric3d.estimate(color, reader.K)
+        else:
+            depth_path = os.path.join(args.test_scene_dir, "depth", f"{reader.id_strs[i]}.png")
+            depth = cv2.imread(depth_path, cv2.IMREAD_UNCHANGED).astype(np.float32) / 1000.0
 
         mask_path = os.path.join(args.test_scene_dir, "masks", f"{reader.id_strs[i]}.png")
         mask = cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE)
