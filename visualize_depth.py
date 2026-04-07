@@ -132,6 +132,8 @@ def main():
                         help="Scale factor for depth maps (overrides auto-calibration)")
     parser.add_argument("--table_depth", type=float, default=None,
                         help="Hard cutoff in metres (after scaling): pixels at or beyond this are zeroed")
+    parser.add_argument("--label", type=str, default=None,
+                        help="Label shown in video (defaults to --source value)")
     parser.add_argument("--calibrate", action="store_true",
                         help="Run binary_search_depth on frame 0 to compute depth scale (same as tracking pipeline)")
     parser.add_argument("--mesh_file", type=str,
@@ -216,7 +218,8 @@ def main():
         if depth is None:
             continue
         depth  = mask_background(depth * depth_scale, table_cutoff)
-        frame  = make_frame(color, depth, vmin, vmax, args.source.upper())
+        label  = args.label.upper() if args.label else args.source.upper()
+        frame  = make_frame(color, depth, vmin, vmax, label)
         out.write(cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
         if i % 50 == 0:
             print(f"  [{i}/{len(reader.color_files)}]")

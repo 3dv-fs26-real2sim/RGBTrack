@@ -33,6 +33,7 @@ mkdir -p $OUT/vda $OUT/metric3d $OUT/depth_pro
 # Metric3D (calibrated)
 /work/courses/3dv/team22/py310_env/bin/python visualize_depth.py \
     --source depth_pro_maps \
+    --label metric3d \
     --test_scene_dir $SCENE \
     --depth_pro_maps_dir $SCENE/depth_metric3d \
     --mesh_file $MESH \
@@ -42,6 +43,7 @@ mkdir -p $OUT/vda $OUT/metric3d $OUT/depth_pro
 # Depth Pro (calibrated)
 /work/courses/3dv/team22/py310_env/bin/python visualize_depth.py \
     --source depth_pro_maps \
+    --label depth_pro \
     --test_scene_dir $SCENE \
     --depth_pro_maps_dir $SCENE/depth_pro \
     --mesh_file $MESH \
