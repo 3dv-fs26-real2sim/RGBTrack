@@ -153,6 +153,8 @@ def main():
     parser.add_argument("--fps", type=int, default=15)
     parser.add_argument("--depth_scale", type=float, default=None,
                         help="Scale factor for depth maps (overrides auto-calibration)")
+    parser.add_argument("--table_depth", type=float, default=None,
+                        help="Hard cutoff in metres (after scaling): pixels at or beyond this are zeroed")
     parser.add_argument("--calibrate", action="store_true",
                         help="Run binary_search_depth on frame 0 to compute depth scale (same as tracking pipeline)")
     parser.add_argument("--mesh_file", type=str,
@@ -212,8 +214,12 @@ def main():
         if depth is not None:
             sample_depths.append(depth * depth_scale)
 
-    # Auto-detect table and mask background
-    table_cutoff = detect_table_cutoff(sample_depths)
+    # Table cutoff: use provided value or auto-detect
+    if args.table_depth is not None:
+        table_cutoff = args.table_depth
+        print(f"Using fixed table cutoff: {table_cutoff:.3f}m")
+    else:
+        table_cutoff = detect_table_cutoff(sample_depths)
     masked = [mask_background(d, table_cutoff) for d in sample_depths]
     valid_vals = np.concatenate([d[d > 0.1].ravel() for d in masked])
     vmin = float(np.percentile(valid_vals, 2))
