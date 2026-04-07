@@ -154,9 +154,9 @@ if __name__ == "__main__":
             d_scaled  = depth * depth_scale
 
             # Always run FP (translation always used)
-            pose = est.track_one_new(
+            pose = est.track_one(
                 rgb=color, depth=d_scaled, K=reader.K,
-                iteration=args.track_refine_iter, mask=mask
+                iteration=args.track_refine_iter,
             )
 
             # ── ScoreNet quality gate (only when occluded — saves ~half the fps) ─
