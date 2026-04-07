@@ -23,6 +23,8 @@ import os, argparse
 import numpy as np
 import cv2
 from datareader import YcbineoatReader
+from estimater import *
+from tools import *
 
 CMAP = cv2.COLORMAP_PLASMA   # colormap for depth
 
@@ -60,19 +62,25 @@ def detect_table_cutoff(depths_sample, jump_threshold=0.08):
         valid = np.concatenate([d[d > 0.1].ravel() for d in depths_sample])
         hist, edges = np.histogram(valid, bins=300)
         centers = (edges[:-1] + edges[1:]) / 2
-        cutoff = float(centers[np.argmax(hist)]) + 0.10
+        cutoff = float(centers[np.argmax(hist)]) + 0.05
     else:
         all_far = np.concatenate(all_far)
-        cutoff = float(np.percentile(all_far, 5))  # min with noise robustness
+        cutoff = float(np.percentile(all_far, 2))  # aggressive: take near-minimum
 
     print(f"Table boundary cutoff: {cutoff:.3f}m")
     return cutoff
 
 
 def mask_background(depth, cutoff):
-    """Zero out all pixels beyond the table cutoff."""
+    """Zero out pixels beyond cutoff and remove small isolated far patches."""
     out = depth.copy()
     out[out > cutoff] = 0.0
+
+    # Remove isolated non-zero blobs (e.g. far reflections that slipped through)
+    valid = (out > 0).astype(np.uint8)
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9))
+    valid_clean = cv2.morphologyEx(valid, cv2.MORPH_OPEN, kernel)
+    out[valid_clean == 0] = 0.0
     return out
 
 
@@ -161,9 +169,7 @@ def main():
     depth_scale = args.depth_scale or 1.0
     if args.calibrate and args.depth_scale is None:
         print("Calibrating depth scale via binary_search_depth...")
-        from estimater import *
-        from tools import *
-        import trimesh, torch
+        import trimesh
         mesh = trimesh.load(args.mesh_file)
         mesh.apply_scale(0.001)
         scorer  = ScorePredictor()
