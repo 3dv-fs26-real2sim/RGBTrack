@@ -27,15 +27,41 @@ from datareader import YcbineoatReader
 CMAP = cv2.COLORMAP_PLASMA   # colormap for depth
 
 
+def detect_table_cutoff(depths_sample, margin=0.07):
+    """
+    Find the table depth from a sample of depth frames.
+    The table is the dominant flat plane — detected as the largest peak
+    in the depth histogram. Returns table_depth + margin as cutoff.
+    """
+    valid = np.concatenate([d[d > 0.1].ravel() for d in depths_sample])
+    hist, edges = np.histogram(valid, bins=300, range=(0.1, valid.max()))
+    centers = (edges[:-1] + edges[1:]) / 2
+    peak_idx = int(np.argmax(hist))
+    table_depth = float(centers[peak_idx])
+    print(f"Auto-detected table depth: {table_depth:.3f}m  cutoff: {table_depth + margin:.3f}m")
+    return table_depth + margin
+
+
+def mask_background(depth, cutoff):
+    """Zero out all pixels beyond the table cutoff."""
+    out = depth.copy()
+    out[out > cutoff] = 0.0
+    return out
+
+
 def depth_to_rgb(depth, vmin, vmax):
-    """Float32 depth (m) → uint8 RGB colourised frame (log scale for close-up detail)."""
-    depth_clipped = np.clip(depth, max(vmin, 1e-3), vmax)
-    log_d    = np.log(depth_clipped)
-    log_min  = np.log(max(vmin, 1e-3))
-    log_max  = np.log(vmax)
-    norm = ((log_d - log_min) / (log_max - log_min) * 255).astype(np.uint8)
-    colored = cv2.applyColorMap(norm, CMAP)
-    return cv2.cvtColor(colored, cv2.COLOR_BGR2RGB)
+    """Float32 depth (m) → uint8 RGB colourised frame (log scale, zeros = black)."""
+    result = np.zeros((*depth.shape, 3), dtype=np.uint8)
+    valid  = depth > 0
+    if valid.any():
+        d = np.clip(depth[valid], max(vmin, 1e-3), vmax)
+        log_d   = np.log(d)
+        log_min = np.log(max(vmin, 1e-3))
+        log_max = np.log(vmax)
+        norm = ((log_d - log_min) / (log_max - log_min) * 255).astype(np.uint8)
+        colored = cv2.applyColorMap(norm.reshape(-1, 1), CMAP).reshape(-1, 3)
+        result[valid] = colored[:, ::-1]  # BGR→RGB
+    return result
 
 
 def make_colorbar(vmin, vmax, h, bar_w=60, font_scale=0.45):
@@ -111,18 +137,22 @@ def main():
             depth_model = DepthProWrapper(checkpoint_path=args.depth_pro_ckpt)
             print("Depth Pro loaded")
 
-    # First pass: compute global depth range for consistent colormap
-    print("Computing depth range...")
-    depths = []
-    for i in range(min(50, len(reader.color_files))):   # sample 50 frames
+    # First pass: sample frames → detect table cutoff + depth range
+    print("Sampling frames for table detection and depth range...")
+    sample_depths = []
+    for i in range(min(50, len(reader.color_files))):
         color = reader.get_color(i)
         depth = _get_depth(i, color, reader, args, depth_model)
         if depth is not None:
-            depths.append(depth[depth > 0.1])
-    all_vals = np.concatenate(depths)
-    vmin = float(np.percentile(all_vals, 2))
-    vmax = float(np.percentile(all_vals, 98))
-    print(f"Depth range: {vmin:.3f}m – {vmax:.3f}m")
+            sample_depths.append(depth)
+
+    # Auto-detect table and mask background
+    table_cutoff = detect_table_cutoff(sample_depths)
+    masked = [mask_background(d, table_cutoff) for d in sample_depths]
+    valid_vals = np.concatenate([d[d > 0.1].ravel() for d in masked])
+    vmin = float(np.percentile(valid_vals, 2))
+    vmax = table_cutoff
+    print(f"Depth range (table only): {vmin:.3f}m – {vmax:.3f}m")
 
     # Second pass: write video
     first_color = reader.get_color(0)
@@ -136,6 +166,7 @@ def main():
         depth  = _get_depth(i, color, reader, args, depth_model)
         if depth is None:
             continue
+        depth  = mask_background(depth, table_cutoff)
         frame  = make_frame(color, depth, vmin, vmax, args.source.upper())
         out.write(cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
         if i % 50 == 0:
