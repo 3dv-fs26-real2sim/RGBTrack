@@ -144,13 +144,46 @@ def main():
                         help="Directory of pre-generated depth PNGs when using --source depth_pro_maps")
     parser.add_argument("--fps", type=int, default=15)
     parser.add_argument("--depth_scale", type=float, default=None,
-                        help="Scale factor for VDA/PNG depths (auto-computed if not set)")
+                        help="Scale factor for depth maps (overrides auto-calibration)")
+    parser.add_argument("--calibrate", action="store_true",
+                        help="Run binary_search_depth on frame 0 to compute depth scale (same as tracking pipeline)")
+    parser.add_argument("--mesh_file", type=str,
+                        default="/work/courses/3dv/team22/foundationpose/data/object/duck/duck.obj",
+                        help="Mesh file for calibration (only used with --calibrate)")
     args = parser.parse_args()
 
     out_video = args.out_video or os.path.join(
         args.test_scene_dir, f"depth_{args.source}.avi")
 
     reader = YcbineoatReader(video_dir=args.test_scene_dir, shorter_side=None, zfar=float("inf"))
+
+    # ── Depth scale calibration via binary_search_depth (same as tracking) ────
+    depth_scale = args.depth_scale or 1.0
+    if args.calibrate and args.depth_scale is None:
+        print("Calibrating depth scale via binary_search_depth...")
+        from estimater import *
+        from tools import *
+        import trimesh, torch
+        mesh = trimesh.load(args.mesh_file)
+        mesh.apply_scale(0.001)
+        scorer  = ScorePredictor()
+        refiner = PoseRefinePredictor()
+        glctx   = dr.RasterizeCudaContext()
+        est_cal = FoundationPose(
+            model_pts=mesh.vertices, model_normals=mesh.vertex_normals, mesh=mesh,
+            scorer=scorer, refiner=refiner, debug_dir="/tmp/vis_cal", debug=0, glctx=glctx)
+        color0 = reader.get_color(0)
+        mask_path = os.path.join(args.test_scene_dir, "masks", f"{reader.id_strs[0]}.png")
+        mask0 = cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE)
+        mask0 = (mask0 > 127).astype(np.uint8)
+        depth0_raw = _get_depth(0, color0, reader, args, None)  # depth_model not loaded yet
+        pose0 = binary_search_depth(est_cal, mesh, color0, mask0.astype(bool), reader.K, debug=False)
+        obj_px = mask0 > 0
+        vda_z  = float(depth0_raw[obj_px].mean()) if obj_px.any() else 1.0
+        bsd_z  = float(pose0[2, 3])
+        depth_scale = bsd_z / vda_z if vda_z > 0 else 1.0
+        print(f"Calibrated depth scale: {depth_scale:.4f}  (raw={vda_z:.3f}m → metric={bsd_z:.3f}m)")
+        del est_cal, scorer, refiner
 
     # Load depth model if needed
     depth_model = None
@@ -171,7 +204,7 @@ def main():
         color = reader.get_color(i)
         depth = _get_depth(i, color, reader, args, depth_model)
         if depth is not None:
-            sample_depths.append(depth)
+            sample_depths.append(depth * depth_scale)
 
     # Auto-detect table and mask background
     table_cutoff = detect_table_cutoff(sample_depths)
@@ -179,7 +212,7 @@ def main():
     valid_vals = np.concatenate([d[d > 0.1].ravel() for d in masked])
     vmin = float(np.percentile(valid_vals, 2))
     vmax = table_cutoff
-    print(f"Depth range (table only): {vmin:.3f}m – {vmax:.3f}m")
+    print(f"Depth range (table only): {vmin:.3f}m – {vmax:.3f}m  (scale={depth_scale:.4f})")
 
     # Second pass: write video
     first_color = reader.get_color(0)
@@ -193,7 +226,7 @@ def main():
         depth  = _get_depth(i, color, reader, args, depth_model)
         if depth is None:
             continue
-        depth  = mask_background(depth, table_cutoff)
+        depth  = mask_background(depth * depth_scale, table_cutoff)
         frame  = make_frame(color, depth, vmin, vmax, args.source.upper())
         out.write(cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
         if i % 50 == 0:

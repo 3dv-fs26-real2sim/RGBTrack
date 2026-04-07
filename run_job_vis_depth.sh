@@ -18,25 +18,32 @@ mkdir -p logs
 
 SCENE=/work/courses/3dv/team22/foundationpose/data/20250804_104715
 OUT=/work/courses/3dv/team22/foundationpose/debug/depth_comparison
+MESH=/work/courses/3dv/team22/foundationpose/data/object/duck/duck.obj
 
 mkdir -p $OUT/vda $OUT/metric3d $OUT/depth_pro
 
-# VDA
+# VDA (calibrated)
 /work/courses/3dv/team22/py310_env/bin/python visualize_depth.py \
     --source vda \
     --test_scene_dir $SCENE \
+    --mesh_file $MESH \
+    --calibrate \
     --out_video $OUT/vda/depth_vda.avi
 
-# Metric3D (pre-generated PNGs)
+# Metric3D (calibrated)
 /work/courses/3dv/team22/py310_env/bin/python visualize_depth.py \
     --source depth_pro_maps \
     --test_scene_dir $SCENE \
     --depth_pro_maps_dir $SCENE/depth_metric3d \
+    --mesh_file $MESH \
+    --calibrate \
     --out_video $OUT/metric3d/depth_metric3d.avi
 
-# Depth Pro (pre-generated PNGs)
+# Depth Pro (calibrated)
 /work/courses/3dv/team22/py310_env/bin/python visualize_depth.py \
     --source depth_pro_maps \
     --test_scene_dir $SCENE \
     --depth_pro_maps_dir $SCENE/depth_pro \
+    --mesh_file $MESH \
+    --calibrate \
     --out_video $OUT/depth_pro/depth_depth_pro.avi
