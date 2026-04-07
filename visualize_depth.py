@@ -29,46 +29,23 @@ from tools import *
 CMAP = cv2.COLORMAP_PLASMA   # colormap for depth
 
 
-def detect_table_cutoff(depths_sample, jump_threshold=0.08):
+def detect_table_cutoff(depths_sample):
     """
-    Find the table/background boundary via depth discontinuities.
-
-    At each edge pixel (large depth gradient), collect the 'far side'
-    depth values. The cutoff is the minimum of those — i.e. the closest
-    background pixel at any table boundary. Everything beyond is masked.
+    Find the table/background boundary using Otsu thresholding on the
+    depth histogram. The valley between the table peak and background
+    peak is the cutoff — everything beyond is background.
     """
-    all_far = []
-    for depth in depths_sample:
-        valid = depth > 0.1
-        d = depth.copy()
-        d[~valid] = 0.0
+    valid = np.concatenate([d[d > 0.1].ravel() for d in depths_sample])
 
-        gx = cv2.Sobel(d, cv2.CV_32F, 1, 0, ksize=3)
-        gy = cv2.Sobel(d, cv2.CV_32F, 0, 1, ksize=3)
-        grad = np.sqrt(gx ** 2 + gy ** 2)
+    # Normalise to uint8 for Otsu (map depth range → 0-255)
+    d_min, d_max = float(valid.min()), float(valid.max())
+    norm = ((valid - d_min) / (d_max - d_min) * 255).astype(np.uint8)
+    thresh_norm, _ = cv2.threshold(norm, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
 
-        edge_mask = (grad > jump_threshold) & valid
-        if not edge_mask.any():
-            continue
-
-        edge_depths = d[edge_mask]
-        med = float(np.median(edge_depths))
-        far = edge_depths[edge_depths > med]
-        if len(far):
-            all_far.append(far)
-
-    if not all_far:
-        # fallback: histogram peak + margin
-        valid = np.concatenate([d[d > 0.1].ravel() for d in depths_sample])
-        hist, edges = np.histogram(valid, bins=300)
-        centers = (edges[:-1] + edges[1:]) / 2
-        cutoff = float(centers[np.argmax(hist)]) + 0.05
-    else:
-        all_far = np.concatenate(all_far)
-        cutoff = float(np.percentile(all_far, 2))  # aggressive: take near-minimum
-
-    print(f"Table boundary cutoff: {cutoff:.3f}m")
-    return cutoff
+    # Convert back to metres
+    cutoff = d_min + (thresh_norm / 255.0) * (d_max - d_min)
+    print(f"Otsu table cutoff: {cutoff:.3f}m")
+    return float(cutoff)
 
 
 def mask_background(depth, cutoff):
