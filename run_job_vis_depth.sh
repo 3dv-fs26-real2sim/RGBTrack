@@ -11,6 +11,7 @@ export PATH=/work/courses/3dv/team22/py310_env/bin:$PATH
 export CUDA_HOME=/cluster/data/cuda/12.8
 export PATH=$CUDA_HOME/bin:$PATH
 export LD_LIBRARY_PATH=$CUDA_HOME/lib64:$LD_LIBRARY_PATH
+export LD_LIBRARY_PATH=/work/courses/3dv/team22/py310_env/lib/python3.10/site-packages/torch/lib:$LD_LIBRARY_PATH
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 cd /work/courses/3dv/team22/RGBTrack
