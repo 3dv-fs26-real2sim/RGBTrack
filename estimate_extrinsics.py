@@ -177,35 +177,32 @@ def main():
         T_ct = pose6_to_T(v)          # T_cam_to_tower (what we're solving for)
         c = 0.0
 
-        # 1. Duck consistency: all early frames map duck to same base-frame point
+        # 1. Translation regularisation: camera must be physically near tower
+        t_norm = np.linalg.norm(T_ct[:3, 3])
+        c += 500.0 * max(0, t_norm - 0.12)**2   # penalise >12cm from tower
+
+        # 2. Duck consistency: all early frames map duck to same base-frame point
         duck_base_pts = []
-        for i, (dc, T_tb) in enumerate(zip(duck_cam_list, tower_T_list)):
+        for dc, T_tb in zip(duck_cam_list, tower_T_list):
             T_cam_in_base = T_tb @ T_ct
             p_base = (T_cam_in_base @ np.append(dc, 1))[:3]
             duck_base_pts.append(p_base)
         duck_base_pts = np.array(duck_base_pts)
 
-        # Penalise variance in duck position across frames
+        # Penalise variance in duck position across frames (duck is static)
         duck_mean = duck_base_pts.mean(0)
-        c += 50.0 * ((duck_base_pts - duck_mean)**2).sum()
+        c += 100.0 * ((duck_base_pts - duck_mean)**2).sum()
 
-        # Duck z ≈ DUCK_Z
-        c += 200.0 * (duck_mean[2] - DUCK_Z)**2
+        # Duck z ≈ DUCK_Z  (table surface)
+        c += 500.0 * (duck_mean[2] - DUCK_Z)**2
 
-        # Duck x,y in workspace
+        # Duck x,y in reachable workspace
         c += 1.0 * max(0, np.abs(duck_mean[:2]).max() - 0.9)**2
 
-        # 2. Palm pixel constraint at frame_hand
-        T_cam_in_base_hand = T_tower_hand @ T_ct
-        T_base_to_cam_hand = np.linalg.inv(T_cam_in_base_hand)
-        palm_cam = (T_base_to_cam_hand @ np.append(palm_base, 1))[:3]
-        z = palm_cam[2]
-        if z > 0.01:
-            u = palm_cam[0] / z * fx + cx
-            v_px = palm_cam[1] / z * fy + cy
-            c += 10.0 * ((u - PALM_U)**2 + (v_px - PALM_V)**2) / 100.0
-        else:
-            c += 500.0  # palm behind camera
+        # 3. Palm must be in front of camera (positive z_cam)
+        T_base_to_cam = np.linalg.inv(T_tower_hand @ T_ct)
+        palm_cam = (T_base_to_cam @ np.append(palm_base, 1))[:3]
+        c += 200.0 * max(0, 0.05 - palm_cam[2])**2
 
         return c
 
