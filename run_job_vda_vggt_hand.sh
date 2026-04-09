@@ -1,8 +1,8 @@
 #!/bin/bash
 #SBATCH --account=3dv
 #SBATCH --time=06:00:00
-#SBATCH --output=/work/courses/3dv/team22/RGBTrack/logs/job_da3_vggt_hand_%j.out
-#SBATCH --error=/work/courses/3dv/team22/RGBTrack/logs/job_da3_vggt_hand_%j.err
+#SBATCH --output=/work/courses/3dv/team22/RGBTrack/logs/job_vda_vggt_hand_%j.out
+#SBATCH --error=/work/courses/3dv/team22/RGBTrack/logs/job_vda_vggt_hand_%j.err
 
 . /etc/profile.d/modules.sh
 module load cuda/12.8
@@ -21,9 +21,8 @@ mkdir -p logs
 /work/courses/3dv/team22/py310_env/bin/python run_demo_vda_hand.py \
     --mesh_file /work/courses/3dv/team22/foundationpose/data/object/duck/duck.obj \
     --test_scene_dir /work/courses/3dv/team22/foundationpose/data/20250804_104715 \
-    --debug_dir /work/courses/3dv/team22/foundationpose/debug/duck_da3_vggt_hand \
+    --debug_dir /work/courses/3dv/team22/foundationpose/debug/duck_vda_vggt_hand \
     --est_refine_iter 2 \
     --track_refine_iter 2 \
     --debug 2 \
-    --depth_dir /work/courses/3dv/team22/foundationpose/data/20250804_104715/depth_da3 \
     --depth_dir_occ /work/courses/3dv/team22/foundationpose/data/20250804_104715/depth_vggt
