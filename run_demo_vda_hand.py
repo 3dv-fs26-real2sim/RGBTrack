@@ -75,6 +75,8 @@ if __name__ == "__main__":
                         help="Path to Depth Pro checkpoint. If set, uses Depth Pro instead of VDA depth PNGs.")
     parser.add_argument("--depth_dir", type=str, default=None,
                         help="Override depth PNG directory (e.g. depth_pro/ for pre-generated maps). Defaults to test_scene_dir/depth/")
+    parser.add_argument("--depth_dir_occ", type=str, default=None,
+                        help="Depth PNG directory to use when occluded. Falls back to --depth_dir if not set.")
     args = parser.parse_args()
 
     set_logging_format()
@@ -114,20 +116,28 @@ if __name__ == "__main__":
 
     frame0_mask_area   = None
     depth_scale        = 1.0
+    depth_scale_occ    = 1.0
     baseline_score     = None
     last_good_duck_rot = None
     was_occluded       = False
+
+    depth_dir_vis = args.depth_dir or os.path.join(args.test_scene_dir, "depth")
+    depth_dir_occ = args.depth_dir_occ or depth_dir_vis
+
+    def load_depth_png(d_dir, id_str):
+        path = os.path.join(d_dir, f"{id_str}.png")
+        return cv2.imread(path, cv2.IMREAD_UNCHANGED).astype(np.float32) / 1000.0
 
     for i in range(len(reader.color_files)):
         color = reader.get_color(i)
         t1    = time.time()
 
         if metric3d is not None:
-            depth = metric3d.estimate(color, reader.K)
+            depth     = metric3d.estimate(color, reader.K)
+            depth_occ = depth
         else:
-            depth_dir  = args.depth_dir or os.path.join(args.test_scene_dir, "depth")
-            depth_path = os.path.join(depth_dir, f"{reader.id_strs[i]}.png")
-            depth = cv2.imread(depth_path, cv2.IMREAD_UNCHANGED).astype(np.float32) / 1000.0
+            depth     = load_depth_png(depth_dir_vis, reader.id_strs[i])
+            depth_occ = load_depth_png(depth_dir_occ, reader.id_strs[i])
 
         mask_path = os.path.join(args.test_scene_dir, "masks", f"{reader.id_strs[i]}.png")
         mask = cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE)
@@ -139,10 +149,12 @@ if __name__ == "__main__":
             frame0_mask_area   = float(mask.sum())
             last_good_duck_rot = pose[:3, :3].copy()
             obj_pixels  = mask > 0
-            vda_z       = depth[obj_pixels].mean() if obj_pixels.any() else 1.0
             bsd_z       = float(pose[2, 3])
+            vda_z       = depth[obj_pixels].mean() if obj_pixels.any() else 1.0
             depth_scale = bsd_z / vda_z if vda_z > 0 else 1.0
-            logging.info(f"Depth scale: {depth_scale:.3f}")
+            occ_z       = depth_occ[obj_pixels].mean() if obj_pixels.any() else 1.0
+            depth_scale_occ = bsd_z / occ_z if occ_z > 0 else 1.0
+            logging.info(f"Depth scale (vis): {depth_scale:.3f}  (occ): {depth_scale_occ:.3f}")
 
             # Record ScoreNet baseline at init
             baseline_score = score_current_pose(est, color, depth * depth_scale, reader.K)
@@ -151,7 +163,7 @@ if __name__ == "__main__":
         else:
             mask_area = float(mask.sum())
             occluded  = (frame0_mask_area > 0) and (mask_area < OCCLUSION_THRESHOLD * frame0_mask_area)
-            d_scaled  = depth * depth_scale
+            d_scaled  = (depth_occ * depth_scale_occ) if occluded else (depth * depth_scale)
 
             # Always run FP (translation always used)
             pose = est.track_one(
