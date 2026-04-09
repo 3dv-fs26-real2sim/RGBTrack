@@ -50,6 +50,12 @@ def main():
         mask = renderer.render(qpos_arm[i], qpos_hand[i])
         rgb  = cv2.cvtColor(rgb_data[i], cv2.COLOR_RGB2BGR)
 
+        print(f"Frame {i}  mask px: {(mask > 0).sum()}")
+
+        # Also save raw mask for inspection
+        mask_path = os.path.join(args.out_dir, f"mask_{i:06d}.png")
+        cv2.imwrite(mask_path, mask)
+
         # Overlay mask in red
         overlay = rgb.copy()
         overlay[mask > 0] = (0, 0, 200)
@@ -57,7 +63,7 @@ def main():
 
         out_path = os.path.join(args.out_dir, f"frame_{i:06d}.png")
         cv2.imwrite(out_path, vis)
-        print(f"Saved {out_path}  mask px: {(mask > 0).sum()}")
+        print(f"  Saved {out_path}")
 
     renderer.close()
     print("Done.")

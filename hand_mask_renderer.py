@@ -184,23 +184,31 @@ class HandMaskRenderer:
                 continue
             verts_cam = verts_cam[in_front]
 
-            # Project to pixel coordinates
-            u = (verts_cam[:, 0] / verts_cam[:, 2] * fx + cx).astype(np.int32)
-            v = (verts_cam[:, 1] / verts_cam[:, 2] * fy + cy).astype(np.int32)
+            # Project to pixel coordinates (all front-facing vertices)
+            u_f = verts_cam[:, 0] / verts_cam[:, 2] * fx + cx
+            v_f = verts_cam[:, 1] / verts_cam[:, 2] * fy + cy
 
-            # Clip to image bounds
-            valid = (u >= 0) & (u < self.W) & (v >= 0) & (v < self.H)
-            if not np.any(valid):
+            # Skip link if all verts project far outside image
+            MARGIN = 500
+            near = ((u_f >= -MARGIN) & (u_f < self.W + MARGIN) &
+                    (v_f >= -MARGIN) & (v_f < self.H + MARGIN))
+            if not np.any(near):
                 continue
-            pts = np.stack([u[valid], v[valid]], axis=1)
 
-            # Convex hull → filled polygon
+            # Clip to prevent int32 overflow in OpenCV
+            u = np.clip(u_f, -10000, 10000).astype(np.int32)
+            v = np.clip(v_f, -10000, 10000).astype(np.int32)
+
+            pts = np.stack([u, v], axis=1)
+
+            # Convex hull of all projected verts → OpenCV clips to image bounds
             if len(pts) >= 3:
                 hull = cv2.convexHull(pts.reshape(-1, 1, 2))
                 cv2.fillConvexPoly(mask, hull, 255)
             else:
                 for p in pts:
-                    cv2.circle(mask, tuple(p), 2, 255, -1)
+                    if 0 <= p[0] < self.W and 0 <= p[1] < self.H:
+                        cv2.circle(mask, tuple(p), 2, 255, -1)
 
         # Dilate to cover boundary pixels
         if self.dilate_px > 0:
