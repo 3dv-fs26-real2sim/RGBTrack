@@ -84,7 +84,7 @@ def main():
     fx, fy = CAM_K[0,0], CAM_K[1,1]
     cx, cy = CAM_K[0,2], CAM_K[1,2]
 
-    print("\n--- Hand link positions ---")
+    print("\n--- Hand link positions (hardcoded T_cam_to_base) ---")
     hand_links = [ln for ln in link_name_to_idx if "right_" in ln or "orca" in ln]
     for lname in sorted(hand_links):
         lidx  = link_name_to_idx[lname]
@@ -99,6 +99,42 @@ def main():
             print(f"  {lname:40s}  base={np.round(pos_b,3)}  cam_z={z:.3f}  uv=({u:.0f},{v:.0f})")
         else:
             print(f"  {lname:40s}  base={np.round(pos_b,3)}  cam_z={z:.3f}  BEHIND CAMERA")
+
+    # ── Try using right_tower FK as the camera frame ──────────────────────
+    print("\n--- Trying right_tower as camera frame (dynamic T_cam_to_base) ---")
+    tower_idx = link_name_to_idx.get("right_tower")
+    if tower_idx is not None:
+        state_t = pybullet.getLinkState(robot, tower_idx, computeForwardKinematics=True,
+                                         physicsClientId=client)
+        tower_pos  = np.array(state_t[4])
+        tower_quat = np.array(state_t[5])  # x,y,z,w
+        from scipy.spatial.transform import Rotation
+        R_tower = Rotation.from_quat(tower_quat).as_matrix()
+        T_tower_in_base = np.eye(4)
+        T_tower_in_base[:3,:3] = R_tower
+        T_tower_in_base[:3, 3] = tower_pos
+        print(f"  right_tower in base: pos={tower_pos.round(4)}")
+        print(f"  right_tower rot (rpy deg): {np.degrees(Rotation.from_matrix(R_tower).as_euler('xyz')).round(2)}")
+
+        # T_base_to_tower = inv(T_tower_in_base)
+        T_base_to_tower = np.linalg.inv(T_tower_in_base)
+
+        for lname in ["right_palm", "right_index_mp", "right_thumb_mp", "right_wrist_jointbody"]:
+            if lname not in link_name_to_idx: continue
+            lidx  = link_name_to_idx[lname]
+            state = pybullet.getLinkState(robot, lidx, computeForwardKinematics=True,
+                                           physicsClientId=client)
+            pos_b = np.array(state[4])
+            pos_c = (T_base_to_tower @ np.append(pos_b, 1))[:3]
+            z = pos_c[2]
+            if z > 0.001:
+                u = pos_c[0] / z * fx + cx
+                v = pos_c[1] / z * fy + cy
+                print(f"  {lname:35s}  cam_z={z:.4f}  uv=({u:.0f},{v:.0f})")
+            else:
+                print(f"  {lname:35s}  cam_z={z:.4f}  BEHIND CAMERA")
+    else:
+        print("  right_tower link not found")
 
     pybullet.disconnect(client)
 
