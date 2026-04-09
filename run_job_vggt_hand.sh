@@ -25,5 +25,4 @@ mkdir -p logs
     --est_refine_iter 2 \
     --track_refine_iter 2 \
     --debug 2 \
-    --depth_dir /work/courses/3dv/team22/foundationpose/data/20250804_104715/depth_vggt \
-    --calibrate
+    --depth_dir /work/courses/3dv/team22/foundationpose/data/20250804_104715/depth_vggt
