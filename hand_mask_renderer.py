@@ -40,20 +40,22 @@ ALL_JOINT_NAMES = ARM_JOINT_NAMES + HAND_JOINT_NAMES
 
 
 class HandMaskRenderer:
-    def __init__(self, urdf_path, cam_K, T_cam_to_base, img_w=640, img_h=480,
-                 dilate_px=5):
+    def __init__(self, urdf_path, cam_K, img_w=640, img_h=480, dilate_px=5):
         """
         Args:
-            urdf_path    : path to fer_orcahand_right_extended.urdf
-            cam_K        : (3,3) camera intrinsics
-            T_cam_to_base: (4,4) camera-to-robot-base transform
-            img_w/h      : image dimensions
-            dilate_px    : morphological dilation of final mask (pixels)
+            urdf_path : path to fer_orcahand_right_extended.urdf
+            cam_K     : (3,3) camera intrinsics
+            img_w/h   : image dimensions
+            dilate_px : morphological dilation of final mask (pixels)
+
+        The camera-to-base transform is NOT hardcoded — the Aria camera is
+        mounted on the right_tower link (moves with the arm).  T_base_to_cam
+        is recomputed each render() call from the right_tower FK.
         """
         self.urdf_path = os.path.abspath(urdf_path)
         self.urdf_dir  = os.path.dirname(self.urdf_path)
         self.K         = cam_K.astype(np.float64)
-        self.T_base_to_cam = np.linalg.inv(T_cam_to_base).astype(np.float64)
+        self.T_base_to_cam = np.eye(4)   # updated each frame from FK
         self.W, self.H = img_w, img_h
         self.dilate_px = dilate_px
 
@@ -133,6 +135,24 @@ class HandMaskRenderer:
                 self.robot, idx, angle, physicsClientId=self.client
             )
 
+    def _update_camera_from_tower(self):
+        """Recompute T_base_to_cam from right_tower FK (camera moves with arm)."""
+        tower_idx = self.link_name_to_idx.get("right_tower")
+        if tower_idx is None:
+            return
+        state = pybullet.getLinkState(
+            self.robot, tower_idx,
+            computeForwardKinematics=True,
+            physicsClientId=self.client,
+        )
+        pos  = np.array(state[4])
+        quat = np.array(state[5])
+        R = Rotation.from_quat(quat).as_matrix()
+        T_tower_in_base = np.eye(4)
+        T_tower_in_base[:3, :3] = R
+        T_tower_in_base[:3,  3] = pos
+        self.T_base_to_cam = np.linalg.inv(T_tower_in_base)
+
     def _get_link_transform(self, link_name):
         """Returns 4x4 transform of link in robot base frame."""
         if link_name not in self.link_name_to_idx:
@@ -160,6 +180,7 @@ class HandMaskRenderer:
             mask : (H, W) uint8, 255 = hand pixel, 0 = background
         """
         self._set_joints(qpos_arm, qpos_hand)
+        self._update_camera_from_tower()
 
         mask = np.zeros((self.H, self.W), dtype=np.uint8)
         fx, fy = self.K[0, 0], self.K[1, 1]

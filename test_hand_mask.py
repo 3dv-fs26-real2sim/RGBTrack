@@ -11,13 +11,6 @@ import cv2
 import h5py
 from hand_mask_renderer import HandMaskRenderer
 
-T_CAM_TO_BASE = np.array([
-    [-0.02199727, -0.80581615,  0.59175708,  0.20403467],
-    [-0.99905014,  0.03998766,  0.01731508, -0.25486327],
-    [-0.03761575, -0.59081411, -0.80593036,  0.43379187],
-    [ 0.        ,  0.        ,  0.        ,  1.        ]
-])
-
 CAM_K = np.array([
     [266.5086044, 0.0,         320.0],
     [0.0,         266.5086044, 240.0],
@@ -38,7 +31,6 @@ def main():
     renderer = HandMaskRenderer(
         urdf_path=args.urdf,
         cam_K=CAM_K,
-        T_cam_to_base=T_CAM_TO_BASE,
     )
 
     with h5py.File(args.h5, "r") as f:
