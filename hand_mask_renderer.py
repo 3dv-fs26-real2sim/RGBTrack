@@ -101,9 +101,14 @@ class HandMaskRenderer:
         link_blocks = re.findall(
             r'<link name="([^"]+)">(.*?)</link>', content, re.DOTALL
         )
+        # Links to skip: structural / camera housing / non-hand geometry
+        SKIP_LINKS = {"right_tower", "world2right_tower_fixed_jointbody"}
+
         for link_name, block in link_blocks:
-            # Only process orcahand links
+            # Only process orcahand finger/palm/wrist links
             if "right_" not in link_name and "orca" not in link_name:
+                continue
+            if link_name in SKIP_LINKS:
                 continue
             # Find visual mesh (first one, not collision)
             visual_match = re.search(
