@@ -28,8 +28,7 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--h5",      type=str, required=True)
     parser.add_argument("--urdf",    type=str,
-        default=os.path.join(os.path.dirname(__file__),
-            "../../pandaorca_description/urdf/fer_orcahand_right_extended.urdf"))
+        default="/home/hudela/pandaorca_description/urdf/fer_orcahand_right_extended.urdf")
     parser.add_argument("--out_dir", type=str, default="/tmp/mask_test")
     parser.add_argument("--frames",  type=int, nargs="+", default=[0, 100, 300, 600, 900])
     args = parser.parse_args()

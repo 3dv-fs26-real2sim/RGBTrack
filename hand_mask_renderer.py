@@ -105,7 +105,7 @@ class HandMaskRenderer:
                 continue
             # Find visual mesh (first one, not collision)
             visual_match = re.search(
-                r'<visual>.*?<mesh filename="([^"]+)"', block, re.DOTALL
+                r'<visual[^>]*>.*?<mesh filename="([^"]+)"', block, re.DOTALL
             )
             if visual_match:
                 rel_path = visual_match.group(1)
