@@ -75,7 +75,7 @@ def compute_scale(depth_dir, masks_dir, id_strs):
     return 1.0
 
 
-def render_histogram(depths_scaled, labels, colors, frame_idx, n_frames, bins, layout="overlay"):
+def render_histogram(depths_scaled, labels, colors, frame_idx, n_frames, bins, layout="overlay", ymax=None):
     n = len(labels)
     if layout == "grid":
         cols = min(n, 4)
@@ -93,6 +93,8 @@ def render_histogram(depths_scaled, labels, colors, frame_idx, n_frames, bins, l
                     ax.hist(vals, bins=bins, color=color, alpha=0.9,
                             density=True, histtype="step", linewidth=1.2)
             ax.set_xlim(DEPTH_MIN, DEPTH_MAX)
+            if ymax:
+                ax.set_ylim(0, ymax)
             ax.set_title(label.upper(), fontsize=11, color=color)
             ax.set_xlabel("Depth (m)", fontsize=9)
             ax.set_ylabel("Density", fontsize=9)
@@ -113,6 +115,8 @@ def render_histogram(depths_scaled, labels, colors, frame_idx, n_frames, bins, l
             ax.hist(vals, bins=bins, color=color, alpha=0.9,
                     density=True, histtype="step", linewidth=1.2)
         ax.set_xlim(DEPTH_MIN, DEPTH_MAX)
+        if ymax:
+            ax.set_ylim(0, ymax)
         ax.set_xlabel("Depth (m, scaled)", fontsize=11)
         ax.set_ylabel("Pixel density", fontsize=11)
         ax.set_title(f"Depth spectrum — frame {frame_idx:04d} / {n_frames}", fontsize=12)
@@ -171,6 +175,23 @@ def main():
         print("No valid sources found.")
         return
 
+    # Sample every 10th frame to find global max density for fixed y-axis
+    print("Sampling frames to compute global y-axis limit...")
+    global_ymax = 0.0
+    sample_ids = id_strs[::10]
+    for id_str in sample_ids:
+        for d_dir, scale in zip(depth_dirs, scales):
+            d = load_depth(d_dir, id_str)
+            if d is None:
+                continue
+            vals = (d * scale)[(d * scale > DEPTH_MIN) & (d * scale < DEPTH_MAX)]
+            if len(vals) == 0:
+                continue
+            counts, _ = np.histogram(vals, bins=bins, density=True)
+            global_ymax = max(global_ymax, float(counts.max()))
+    global_ymax *= 1.05  # small headroom
+    print(f"Global y-axis max: {global_ymax:.4f}")
+
     print(f"Rendering {len(id_strs)} frames → {out_path}")
 
     writer = None
@@ -180,7 +201,7 @@ def main():
             d = load_depth(d_dir, id_str)
             depths_scaled.append(d * scale if d is not None else None)
 
-        frame = render_histogram(depths_scaled, labels, colors, i, len(id_strs), bins, args.layout)
+        frame = render_histogram(depths_scaled, labels, colors, i, len(id_strs), bins, args.layout, global_ymax)
 
         if writer is None:
             h, w = frame.shape[:2]
