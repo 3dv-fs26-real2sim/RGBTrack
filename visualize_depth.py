@@ -129,7 +129,7 @@ def main():
                         help="Directory of pre-generated depth PNGs when using --source depth_pro_maps")
     parser.add_argument("--depth_dir", type=str, default=None,
                         help="Directory of pre-generated depth PNGs when using --source custom")
-    parser.add_argument("--fps", type=int, default=15)
+    parser.add_argument("--fps", type=int, default=50)
     parser.add_argument("--depth_scale", type=float, default=None,
                         help="Scale factor for depth maps (overrides auto-calibration)")
     parser.add_argument("--table_depth", type=float, default=None,
