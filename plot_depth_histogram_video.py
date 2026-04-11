@@ -141,6 +141,8 @@ def main():
                         help="Output mp4 path. Defaults to debug/depth_hist_<source>.mp4")
     parser.add_argument("--layout", type=str, default="overlay", choices=["overlay", "grid"],
                         help="overlay: all on one plot, grid: one subplot per source")
+    parser.add_argument("--no_scale", action="store_true",
+                        help="Skip scaling — show raw depth values as loaded")
     args = parser.parse_args()
 
     sources = [s.strip() for s in args.source.split(",")]
@@ -164,7 +166,7 @@ def main():
         if not os.path.isdir(d_dir):
             print(f"Missing depth dir for {src}: {d_dir}, skipping")
             continue
-        scale = compute_scale(d_dir, masks_dir, id_strs)
+        scale = 1.0 if args.no_scale else compute_scale(d_dir, masks_dir, id_strs)
         print(f"  {src}: scale={scale:.4f}")
         depth_dirs.append(d_dir)
         scales.append(scale)
