@@ -28,9 +28,11 @@ SOURCES = [
     ("DA3",        "depth_da3"),
     ("Metric3D",   "depth_metric3d"),
     ("Depth Pro",  "depth_pro"),
+    ("VGGT",       "depth_vggt"),
 ]
 
-COLORS = ["#4C72B0", "#DD8452", "#55A868", "#C44E52", "#8172B3"]
+COLORS      = ["#4C72B0", "#DD8452", "#55A868", "#C44E52", "#8172B3"]
+LINESTYLES  = ["-", "--", "-.", ":", (0, (3, 1, 1, 1))]
 
 
 def load_depth(depth_dir, id_str):
@@ -117,8 +119,9 @@ def main():
             m = means * s
             sd = stds * s
             color = COLORS[i % len(COLORS)]
-            ax.plot(frames, m, color=color, linewidth=1.2, label=label)
-            ax.fill_between(frames, m - sd, m + sd, color=color, alpha=0.15)
+            ls    = LINESTYLES[i % len(LINESTYLES)]
+            ax.plot(frames, m, color=color, linewidth=1.5, linestyle=ls, label=label)
+            ax.fill_between(frames, m - sd, m + sd, color=color, alpha=0.12)
 
         ax.set_title(title, fontsize=11)
         ax.set_xlabel("Frame")
