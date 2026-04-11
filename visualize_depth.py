@@ -144,7 +144,7 @@ def main():
     args = parser.parse_args()
 
     out_video = args.out_video or os.path.join(
-        args.test_scene_dir, f"depth_{args.source}.avi")
+        args.test_scene_dir, f"depth_{args.source}.mp4")
 
     reader = YcbineoatReader(video_dir=args.test_scene_dir, shorter_side=None, zfar=float("inf"))
 
@@ -212,7 +212,7 @@ def main():
     h, w = first_color.shape[:2]
     bar_w = 95
     frame_w = w * 2 + bar_w
-    out = cv2.VideoWriter(out_video, cv2.VideoWriter_fourcc(*"XVID"), args.fps, (frame_w, h))
+    out = cv2.VideoWriter(out_video, cv2.VideoWriter_fourcc(*"mp4v"), args.fps, (frame_w, h))
 
     for i in range(len(reader.color_files)):
         color  = reader.get_color(i)
