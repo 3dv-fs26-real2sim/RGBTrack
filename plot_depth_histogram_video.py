@@ -96,7 +96,7 @@ def render_histogram(depths_scaled, labels, colors, frame_idx, n_frames, bins):
     canvas = FigureCanvas(fig)
     canvas.draw()
     w, h = canvas.get_width_height()
-    img = np.frombuffer(canvas.tostring_rgb(), dtype=np.uint8).reshape(h, w, 3)
+    img = np.frombuffer(canvas.buffer_rgba(), dtype=np.uint8).reshape(h, w, 4)[:, :, :3]
     plt.close(fig)
     return cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
 
