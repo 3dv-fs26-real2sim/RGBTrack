@@ -117,8 +117,8 @@ def main():
     parser.add_argument("--test_scene_dir", type=str,
                         default="/work/courses/3dv/team22/foundationpose/data/20250804_104715")
     parser.add_argument("--source", type=str, required=True,
-                        choices=["vda", "metric3d", "depth_pro", "depth_pro_maps"],
-                        help="Depth source")
+                        choices=["vda", "metric3d", "depth_pro", "depth_pro_maps", "custom"],
+                        help="Depth source. Use 'custom' with --depth_dir for any pre-generated PNGs.")
     parser.add_argument("--metric3d_ckpt", type=str,
                         default="/work/courses/3dv/team22/metric3d_vit_large.pth")
     parser.add_argument("--depth_pro_ckpt", type=str,
@@ -127,6 +127,8 @@ def main():
                         help="Output AVI path. Defaults to test_scene_dir/depth_<source>.avi")
     parser.add_argument("--depth_pro_maps_dir", type=str, default=None,
                         help="Directory of pre-generated depth PNGs when using --source depth_pro_maps")
+    parser.add_argument("--depth_dir", type=str, default=None,
+                        help="Directory of pre-generated depth PNGs when using --source custom")
     parser.add_argument("--fps", type=int, default=15)
     parser.add_argument("--depth_scale", type=float, default=None,
                         help="Scale factor for depth maps (overrides auto-calibration)")
@@ -239,6 +241,14 @@ def _get_depth(i, color, reader, args, depth_model):
     elif args.source == "depth_pro_maps":
         maps_dir = args.depth_pro_maps_dir or os.path.join(args.test_scene_dir, "depth_pro")
         path = os.path.join(maps_dir, f"{reader.id_strs[i]}.png")
+        raw  = cv2.imread(path, cv2.IMREAD_UNCHANGED)
+        if raw is None:
+            return None
+        return raw.astype(np.float32) / 1000.0
+
+    elif args.source == "custom":
+        assert args.depth_dir, "--depth_dir required with --source custom"
+        path = os.path.join(args.depth_dir, f"{reader.id_strs[i]}.png")
         raw  = cv2.imread(path, cv2.IMREAD_UNCHANGED)
         if raw is None:
             return None
