@@ -24,6 +24,7 @@ DEPTH_DIRS = {
     "da3":       "depth_da3",
     "metric3d":  "depth_metric3d",
     "depth_pro": "depth_pro",
+    "vggt":      "depth_vggt",
 }
 
 COLORS = {
@@ -31,6 +32,7 @@ COLORS = {
     "da3":       "#DD8452",
     "metric3d":  "#55A868",
     "depth_pro": "#C44E52",
+    "vggt":      "#8172B3",
 }
 
 DEPTH_MIN = 0.05   # m
@@ -73,26 +75,51 @@ def compute_scale(depth_dir, masks_dir, id_strs):
     return 1.0
 
 
-def render_histogram(depths_scaled, labels, colors, frame_idx, n_frames, bins):
-    fig, ax = plt.subplots(figsize=(10, 4))
-    for d, label, color in zip(depths_scaled, labels, colors):
-        if d is None:
-            continue
-        vals = d[(d > DEPTH_MIN) & (d < DEPTH_MAX)]
-        if len(vals) == 0:
-            continue
-        ax.hist(vals, bins=bins, color=color, alpha=0.55, label=label.upper(),
-                density=True, histtype="stepfilled")
-        ax.hist(vals, bins=bins, color=color, alpha=0.9,
-                density=True, histtype="step", linewidth=1.2)
+def render_histogram(depths_scaled, labels, colors, frame_idx, n_frames, bins, layout="overlay"):
+    n = len(labels)
+    if layout == "grid":
+        cols = min(n, 4)
+        rows = (n + cols - 1) // cols
+        fig, axes = plt.subplots(rows, cols, figsize=(5 * cols, 4 * rows), squeeze=False)
+        axes_flat = [axes[r][c] for r in range(rows) for c in range(cols)]
+        fig.suptitle(f"Depth spectrum (scaled) — frame {frame_idx:04d} / {n_frames}",
+                     fontsize=13, fontweight="bold")
+        for ax, d, label, color in zip(axes_flat, depths_scaled, labels, colors):
+            if d is not None:
+                vals = d[(d > DEPTH_MIN) & (d < DEPTH_MAX)]
+                if len(vals):
+                    ax.hist(vals, bins=bins, color=color, alpha=0.6,
+                            density=True, histtype="stepfilled")
+                    ax.hist(vals, bins=bins, color=color, alpha=0.9,
+                            density=True, histtype="step", linewidth=1.2)
+            ax.set_xlim(DEPTH_MIN, DEPTH_MAX)
+            ax.set_title(label.upper(), fontsize=11, color=color)
+            ax.set_xlabel("Depth (m)", fontsize=9)
+            ax.set_ylabel("Density", fontsize=9)
+            ax.grid(True, alpha=0.3)
+        # hide unused subplots
+        for ax in axes_flat[n:]:
+            ax.set_visible(False)
+    else:
+        fig, ax = plt.subplots(figsize=(10, 4))
+        for d, label, color in zip(depths_scaled, labels, colors):
+            if d is None:
+                continue
+            vals = d[(d > DEPTH_MIN) & (d < DEPTH_MAX)]
+            if len(vals) == 0:
+                continue
+            ax.hist(vals, bins=bins, color=color, alpha=0.55, label=label.upper(),
+                    density=True, histtype="stepfilled")
+            ax.hist(vals, bins=bins, color=color, alpha=0.9,
+                    density=True, histtype="step", linewidth=1.2)
+        ax.set_xlim(DEPTH_MIN, DEPTH_MAX)
+        ax.set_xlabel("Depth (m, scaled)", fontsize=11)
+        ax.set_ylabel("Pixel density", fontsize=11)
+        ax.set_title(f"Depth spectrum — frame {frame_idx:04d} / {n_frames}", fontsize=12)
+        ax.legend(fontsize=9, loc="upper right")
+        ax.grid(True, alpha=0.3)
 
-    ax.set_xlim(DEPTH_MIN, DEPTH_MAX)
-    ax.set_xlabel("Depth (m, scaled)", fontsize=11)
-    ax.set_ylabel("Pixel density", fontsize=11)
-    ax.set_title(f"Depth spectrum — frame {frame_idx:04d} / {n_frames}", fontsize=12)
-    ax.legend(fontsize=9, loc="upper right")
-    ax.grid(True, alpha=0.3)
-
+    plt.tight_layout()
     canvas = FigureCanvas(fig)
     canvas.draw()
     w, h = canvas.get_width_height()
@@ -108,6 +135,8 @@ def main():
     parser.add_argument("--scene_dir", default=SCENE_DIR)
     parser.add_argument("--out", default=None,
                         help="Output mp4 path. Defaults to debug/depth_hist_<source>.mp4")
+    parser.add_argument("--layout", type=str, default="overlay", choices=["overlay", "grid"],
+                        help="overlay: all on one plot, grid: one subplot per source")
     args = parser.parse_args()
 
     sources = [s.strip() for s in args.source.split(",")]
@@ -151,7 +180,7 @@ def main():
             d = load_depth(d_dir, id_str)
             depths_scaled.append(d * scale if d is not None else None)
 
-        frame = render_histogram(depths_scaled, labels, colors, i, len(id_strs), bins)
+        frame = render_histogram(depths_scaled, labels, colors, i, len(id_strs), bins, args.layout)
 
         if writer is None:
             h, w = frame.shape[:2]
