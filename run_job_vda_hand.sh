@@ -27,3 +27,15 @@ mkdir -p logs
     --debug 2 \
     --bsd_diag_frames 600 850 \
     --fixed_depth_scale 0.42
+
+/work/courses/3dv/team22/py310_env/bin/python -c "
+import cv2, glob
+frames = sorted(glob.glob('/work/courses/3dv/team22/foundationpose/debug/duck_vda_hand/track_vis/*.png'))
+if not frames: print('No frames'); exit()
+h, w = cv2.imread(frames[0]).shape[:2]
+out = cv2.VideoWriter('/work/courses/3dv/team22/foundationpose/debug/duck_vda_hand/track_vis.mp4',
+                      cv2.VideoWriter_fourcc(*'mp4v'), 50, (w, h))
+for f in frames: out.write(cv2.imread(f))
+out.release()
+print(f'Saved {len(frames)} frames -> track_vis.mp4')
+"
