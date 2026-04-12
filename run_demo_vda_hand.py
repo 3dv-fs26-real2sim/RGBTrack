@@ -173,7 +173,7 @@ if __name__ == "__main__":
                 center = est.guess_translation(
                     depth=d_scaled, mask=mask.astype(bool), K=reader.K)
                 if center is not None and np.linalg.norm(center) > 0.01:
-                    est.pose_last[:3, 3] = torch.as_tensor(
+                    est.pose_last[0, :3, 3] = torch.as_tensor(
                         center, device="cuda", dtype=torch.float)
 
             pose = est.track_one(
