@@ -81,6 +81,9 @@ if __name__ == "__main__":
     parser.add_argument("--bsd_diag_frames", type=int, nargs="+", default=[],
                         help="Frame indices (space-separated) where duck is static. Runs BSD at each "
                              "and prints scale comparison vs frame 0 for affine calibration analysis.")
+    parser.add_argument("--fixed_depth_scale", type=float, default=None,
+                        help="If set, override depth scale with this value and compute offset from "
+                             "frame-0 BSD: depth_true = fixed_scale * raw + offset.")
     args = parser.parse_args()
 
     set_logging_format()
@@ -121,6 +124,7 @@ if __name__ == "__main__":
     frame0_mask_area   = None
     depth_scale        = 1.0
     depth_scale_occ    = 1.0
+    depth_offset       = 0.0
     bsd_z_frame0       = None   # stored for second BSD comparison
     raw_z_frame0       = None
     baseline_score     = None
@@ -160,12 +164,20 @@ if __name__ == "__main__":
             depth_scale = bsd_z / vda_z if vda_z > 0 else 1.0
             occ_z       = depth_occ[obj_pixels].mean() if obj_pixels.any() else 1.0
             depth_scale_occ = bsd_z / occ_z if occ_z > 0 else 1.0
-            bsd_z_frame0    = bsd_z
-            raw_z_frame0    = float(vda_z)
-            logging.info(f"Depth scale (vis): {depth_scale:.3f}  (occ): {depth_scale_occ:.3f}")
+            bsd_z_frame0 = bsd_z
+            raw_z_frame0 = float(vda_z)
+            if args.fixed_depth_scale is not None:
+                depth_scale     = args.fixed_depth_scale
+                depth_scale_occ = args.fixed_depth_scale
+                depth_offset    = bsd_z - args.fixed_depth_scale * float(vda_z)
+                logging.info(f"Fixed scale override: scale={depth_scale:.4f}  offset={depth_offset:.4f}m  "
+                             f"(auto scale would be {bsd_z/float(vda_z):.4f})")
+            else:
+                depth_offset = 0.0
+                logging.info(f"Depth scale (vis): {depth_scale:.3f}  (occ): {depth_scale_occ:.3f}")
 
             # Record ScoreNet baseline at init
-            baseline_score = score_current_pose(est, color, depth * depth_scale, reader.K)
+            baseline_score = score_current_pose(est, color, depth * depth_scale + depth_offset, reader.K)
             logging.info(f"Baseline ScoreNet score: {baseline_score:.4f}")
 
         else:
@@ -193,7 +205,7 @@ if __name__ == "__main__":
                     f"  Affine fit  : depth_true = {aff_a:.4f} * raw + {aff_b:.4f}m\n"
                     f"────────────────────────────────────────────────────────")
 
-            d_scaled  = (depth_occ * depth_scale_occ) if occluded else (depth * depth_scale)
+            d_scaled  = (depth_occ * depth_scale_occ + depth_offset) if occluded else (depth * depth_scale + depth_offset)
 
             # ── FP++ translation correction (from FoundationPose-plus-plus) ───
             # Back-project mask centroid to correct pose_last xy before FP

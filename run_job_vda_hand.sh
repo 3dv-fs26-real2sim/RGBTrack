@@ -25,4 +25,5 @@ mkdir -p logs
     --est_refine_iter 2 \
     --track_refine_iter 2 \
     --debug 2 \
-    --bsd_diag_frames 600 850
+    --bsd_diag_frames 600 850 \
+    --fixed_depth_scale 0.42
