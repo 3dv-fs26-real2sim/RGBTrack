@@ -166,18 +166,26 @@ if __name__ == "__main__":
             occluded  = (frame0_mask_area > 0) and (mask_area < OCCLUSION_THRESHOLD * frame0_mask_area)
             d_scaled  = (depth_occ * depth_scale_occ) if occluded else (depth * depth_scale)
 
-            # ── FP++ translation correction ────────────────────────────────────
-            # When duck is visible, correct pose_last translation using mask
-            # centroid + depth before FP refinement (prevents crop drift).
+            # ── FP++ translation correction (from FoundationPose-plus-plus) ───
+            # Back-project mask centroid to correct pose_last xy before FP
+            # refinement, keeping z from the current pose (prevents crop drift).
             if not occluded and mask.any():
-                center = est.guess_translation(
-                    depth=d_scaled, mask=mask.astype(bool), K=reader.K)
-                if center is not None and np.linalg.norm(center) > 0.01:
-                    t = torch.as_tensor(center, device="cuda", dtype=torch.float)
+                vs, us = np.where(mask > 0)
+                uc = float((us.min() + us.max()) / 2.0)
+                vc = float((vs.min() + vs.max()) / 2.0)
+                K = reader.K
+                pl = est.pose_last if est.pose_last.dim() == 2 else est.pose_last[0]
+                tz = float(pl[2, 3])
+                if tz > 0.01:
+                    tx = (uc - K[0, 2]) * tz / K[0, 0]
+                    ty = (vc - K[1, 2]) * tz / K[1, 1]
+                    est.pose_last = est.pose_last.clone()
                     if est.pose_last.dim() == 3:
-                        est.pose_last[0, :3, 3] = t
+                        est.pose_last[0, 0, 3] = tx
+                        est.pose_last[0, 1, 3] = ty
                     else:
-                        est.pose_last[:3, 3] = t
+                        est.pose_last[0, 3] = tx
+                        est.pose_last[1, 3] = ty
 
             pose = est.track_one(
                 rgb=color, depth=d_scaled, K=reader.K,
