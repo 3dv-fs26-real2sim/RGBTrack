@@ -78,9 +78,9 @@ if __name__ == "__main__":
                         help="Override depth PNG directory (e.g. depth_pro/ for pre-generated maps). Defaults to test_scene_dir/depth/")
     parser.add_argument("--depth_dir_occ", type=str, default=None,
                         help="Depth PNG directory to use when occluded. Falls back to --depth_dir if not set.")
-    parser.add_argument("--second_bsd_frame", type=int, default=-1,
-                        help="Frame index where duck is static in-hand. Runs a second BSD and prints "
-                             "both scale values for affine calibration analysis. -1 to disable.")
+    parser.add_argument("--bsd_diag_frames", type=int, nargs="+", default=[],
+                        help="Frame indices (space-separated) where duck is static. Runs BSD at each "
+                             "and prints scale comparison vs frame 0 for affine calibration analysis.")
     args = parser.parse_args()
 
     set_logging_format()
@@ -172,8 +172,8 @@ if __name__ == "__main__":
             mask_area = float(mask.sum())
             occluded  = (frame0_mask_area > 0) and (mask_area < OCCLUSION_THRESHOLD * frame0_mask_area)
 
-            # ── Second BSD diagnostic ─────────────────────────────────────────
-            if args.second_bsd_frame > 0 and i == args.second_bsd_frame and not occluded:
+            # ── BSD diagnostic frames ─────────────────────────────────────────
+            if i in args.bsd_diag_frames and not occluded:
                 pose2   = binary_search_depth(est, mesh, color, mask.astype(bool), reader.K, debug=False)
                 bsd_z2  = float(pose2[2, 3])
                 raw_z2  = float(depth[mask > 0].mean()) if mask.any() else 1.0
