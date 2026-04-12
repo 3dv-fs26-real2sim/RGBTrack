@@ -31,6 +31,13 @@ try:
 except ImportError:
     DepthProWrapper = None
 
+try:
+    import h5py
+    from hand_mask_renderer import HandMaskRenderer
+    _HAND_CALIB_AVAILABLE = True
+except ImportError:
+    _HAND_CALIB_AVAILABLE = False
+
 # ── Settings ───────────────────────────────────────────────────────────────────
 OCCLUSION_THRESHOLD = 0.90   # duck mask below this → occluded
 RECOVERY_THRESHOLD  = 0.95   # duck mask above this → recovered (re-init)
@@ -78,6 +85,12 @@ if __name__ == "__main__":
                         help="Override depth PNG directory (e.g. depth_pro/ for pre-generated maps). Defaults to test_scene_dir/depth/")
     parser.add_argument("--depth_dir_occ", type=str, default=None,
                         help="Depth PNG directory to use when occluded. Falls back to --depth_dir if not set.")
+    parser.add_argument("--h5_file", type=str, default=None,
+                        help="H5 file with observations/qpos_arm and qpos_hand for affine depth calibration.")
+    parser.add_argument("--urdf_file", type=str, default=None,
+                        help="URDF path for HandMaskRenderer (affine depth calibration).")
+    parser.add_argument("--hand_calib_frame", type=int, default=200,
+                        help="Frame index where hand is fully grasping duck — used as second affine anchor.")
     args = parser.parse_args()
 
     set_logging_format()
@@ -115,9 +128,24 @@ if __name__ == "__main__":
 
     reader = YcbineoatReader(video_dir=args.test_scene_dir, shorter_side=None, zfar=np.inf)
 
+    # ── Affine depth calibration (optional, needs --h5_file + --urdf_file) ──────
+    hand_renderer  = None
+    h5_qpos_arm    = None
+    h5_qpos_hand   = None
+    if args.h5_file and args.urdf_file and _HAND_CALIB_AVAILABLE:
+        import h5py as _h5py
+        with _h5py.File(args.h5_file, "r") as f:
+            h5_qpos_arm  = f["observations/qpos_arm"][()]
+            h5_qpos_hand = f["observations/qpos_hand"][()]
+        hand_renderer = HandMaskRenderer(urdf_path=args.urdf_file, cam_K=reader.K)
+        logging.info(f"HandMaskRenderer ready — affine calib at frame {args.hand_calib_frame}")
+
     frame0_mask_area   = None
     depth_scale        = 1.0
     depth_scale_occ    = 1.0
+    depth_offset       = 0.0          # affine offset: depth_corrected = scale*raw + offset
+    raw_z_duck_frame0  = None         # stored for affine fit at hand_calib_frame
+    true_z_duck_frame0 = None
     baseline_score     = None
     last_good_duck_rot = None
     was_occluded       = False
@@ -157,6 +185,10 @@ if __name__ == "__main__":
             depth_scale_occ = bsd_z / occ_z if occ_z > 0 else 1.0
             logging.info(f"Depth scale (vis): {depth_scale:.3f}  (occ): {depth_scale_occ:.3f}")
 
+            # Store duck anchor for later affine calibration
+            raw_z_duck_frame0  = float(vda_z)
+            true_z_duck_frame0 = float(bsd_z)
+
             # Record ScoreNet baseline at init
             baseline_score = score_current_pose(est, color, depth * depth_scale, reader.K)
             logging.info(f"Baseline ScoreNet score: {baseline_score:.4f}")
@@ -164,7 +196,41 @@ if __name__ == "__main__":
         else:
             mask_area = float(mask.sum())
             occluded  = (frame0_mask_area > 0) and (mask_area < OCCLUSION_THRESHOLD * frame0_mask_area)
-            d_scaled  = (depth_occ * depth_scale_occ) if occluded else (depth * depth_scale)
+
+            # ── Affine depth calibration at hand_calib_frame ──────────────────
+            # Once the hand is fully grasping the duck, fit a two-point affine
+            # (scale + offset) using duck frame-0 BSD and hand FK as anchors.
+            if (hand_renderer is not None
+                    and i == args.hand_calib_frame
+                    and raw_z_duck_frame0 is not None
+                    and h5_qpos_arm is not None):
+                h_mask = hand_renderer.render(h5_qpos_arm[i], h5_qpos_hand[i])
+                h_pixels = h_mask > 127
+                true_z_hand = hand_renderer.get_wrist_z_in_cam(h5_qpos_arm[i], h5_qpos_hand[i])
+                raw_z_hand  = float(depth[h_pixels].mean()) if h_pixels.any() else None
+                if raw_z_hand and true_z_hand and abs(raw_z_hand - raw_z_duck_frame0) > 0.02:
+                    A = np.array([[raw_z_duck_frame0, 1.0],
+                                  [raw_z_hand,        1.0]])
+                    b_vec = np.array([true_z_duck_frame0, true_z_hand])
+                    new_scale, new_offset = np.linalg.solve(A, b_vec)
+                    if 0.5 < new_scale < 3.0:   # sanity check
+                        depth_scale  = new_scale
+                        depth_offset = new_offset
+                        depth_scale_occ = new_scale
+                        logging.info(
+                            f"[frame {i}] Affine calib: scale={depth_scale:.4f}  "
+                            f"offset={depth_offset:.4f}m  "
+                            f"(raw_duck={raw_z_duck_frame0:.3f} true_duck={true_z_duck_frame0:.3f}  "
+                            f"raw_hand={raw_z_hand:.3f} true_hand={true_z_hand:.3f})")
+                    else:
+                        logging.warning(f"[frame {i}] Affine calib rejected (scale={new_scale:.3f}), keeping pure scale")
+                else:
+                    logging.warning(
+                        f"[frame {i}] Affine calib skipped: "
+                        f"raw_z_hand={raw_z_hand}  true_z_hand={true_z_hand}  "
+                        f"depth_diff={abs((raw_z_hand or 0) - raw_z_duck_frame0):.3f}")
+
+            d_scaled  = (depth_occ * depth_scale_occ + depth_offset) if occluded else (depth * depth_scale + depth_offset)
 
             # ── FP++ translation correction (from FoundationPose-plus-plus) ───
             # Back-project mask centroid to correct pose_last xy before FP

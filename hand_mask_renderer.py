@@ -245,5 +245,18 @@ class HandMaskRenderer:
 
         return mask
 
+    def get_wrist_z_in_cam(self, qpos_arm, qpos_hand):
+        """
+        Return the wrist link's Z coordinate in camera frame (metres).
+        Useful as a true-metric anchor for affine depth calibration.
+        """
+        self._set_joints(qpos_arm, qpos_hand)
+        self._update_camera_from_tower()
+        T_wrist_in_base = self._get_link_transform("right_wrist")
+        if T_wrist_in_base is None:
+            return None
+        T_wrist_in_cam = self.T_base_to_cam @ T_wrist_in_base
+        return float(T_wrist_in_cam[2, 3])
+
     def close(self):
         pybullet.disconnect(self.client)
