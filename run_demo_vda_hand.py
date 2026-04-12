@@ -15,6 +15,7 @@ Requires:
 - test_scene_dir/masks/  — SAM2VP duck masks
 """
 import time
+import torch
 from estimater import *
 from datareader import *
 import argparse
@@ -165,7 +166,16 @@ if __name__ == "__main__":
             occluded  = (frame0_mask_area > 0) and (mask_area < OCCLUSION_THRESHOLD * frame0_mask_area)
             d_scaled  = (depth_occ * depth_scale_occ) if occluded else (depth * depth_scale)
 
-            # Always run FP (translation always used)
+            # ── FP++ translation correction ────────────────────────────────────
+            # When duck is visible, correct pose_last translation using mask
+            # centroid + depth before FP refinement (prevents crop drift).
+            if not occluded and mask.any():
+                center = est.guess_translation(
+                    depth=d_scaled, mask=mask.astype(bool), K=reader.K)
+                if center is not None and np.linalg.norm(center) > 0.01:
+                    est.pose_last[:3, 3] = torch.as_tensor(
+                        center, device="cuda", dtype=torch.float)
+
             pose = est.track_one(
                 rgb=color, depth=d_scaled, K=reader.K,
                 iteration=args.track_refine_iter,
