@@ -25,4 +25,4 @@ mkdir -p logs
     --est_refine_iter 2 \
     --track_refine_iter 2 \
     --debug 2 \
-    --second_bsd_frame 300
+    --second_bsd_frame 800

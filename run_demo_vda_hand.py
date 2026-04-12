@@ -121,6 +121,8 @@ if __name__ == "__main__":
     frame0_mask_area   = None
     depth_scale        = 1.0
     depth_scale_occ    = 1.0
+    bsd_z_frame0       = None   # stored for second BSD comparison
+    raw_z_frame0       = None
     baseline_score     = None
     last_good_duck_rot = None
     was_occluded       = False
@@ -158,6 +160,8 @@ if __name__ == "__main__":
             depth_scale = bsd_z / vda_z if vda_z > 0 else 1.0
             occ_z       = depth_occ[obj_pixels].mean() if obj_pixels.any() else 1.0
             depth_scale_occ = bsd_z / occ_z if occ_z > 0 else 1.0
+            bsd_z_frame0    = bsd_z
+            raw_z_frame0    = float(vda_z)
             logging.info(f"Depth scale (vis): {depth_scale:.3f}  (occ): {depth_scale_occ:.3f}")
 
             # Record ScoreNet baseline at init
@@ -170,18 +174,24 @@ if __name__ == "__main__":
 
             # ── Second BSD diagnostic ─────────────────────────────────────────
             if args.second_bsd_frame > 0 and i == args.second_bsd_frame and not occluded:
-                pose2    = binary_search_depth(est, mesh, color, mask.astype(bool), reader.K, debug=False)
-                bsd_z2   = float(pose2[2, 3])
-                raw_z2   = float(depth[mask > 0].mean()) if mask.any() else 1.0
-                scale2   = bsd_z2 / raw_z2 if raw_z2 > 0 else 1.0
-                offset2  = bsd_z2 - depth_scale * raw_z2   # residual offset under current scale
+                pose2   = binary_search_depth(est, mesh, color, mask.astype(bool), reader.K, debug=False)
+                bsd_z2  = float(pose2[2, 3])
+                raw_z2  = float(depth[mask > 0].mean()) if mask.any() else 1.0
+                scale2  = bsd_z2 / raw_z2 if raw_z2 > 0 else 1.0
+                # If depth model were purely multiplicative, scale1 == scale2.
+                # If there's an offset: bsd_z = a*raw_z + b → solve for a,b.
+                if bsd_z_frame0 and raw_z_frame0 and abs(raw_z2 - raw_z_frame0) > 0.01:
+                    A = np.array([[raw_z_frame0, 1.0], [raw_z2, 1.0]])
+                    aff_a, aff_b = np.linalg.solve(A, [bsd_z_frame0, bsd_z2])
+                else:
+                    aff_a, aff_b = depth_scale, 0.0
                 logging.info(
-                    f"[BSD diag frame {i}] "
-                    f"bsd_z={bsd_z2:.4f}  raw_z={raw_z2:.4f}  scale={scale2:.4f}  "
-                    f"| frame-0: bsd_z={depth_scale * (depth[mask > 0].mean() if mask.any() else 1.0):.4f}  "
-                    f"scale={depth_scale:.4f}  "
-                    f"| residual_offset={offset2:.4f}m  "
-                    f"scale_ratio={scale2/depth_scale:.4f}")
+                    f"\n── Second BSD diagnostic (frame {i}) ──────────────────\n"
+                    f"  Frame   0 : raw_z={raw_z_frame0:.4f}m  bsd_z={bsd_z_frame0:.4f}m  scale={depth_scale:.4f}\n"
+                    f"  Frame {i:4d} : raw_z={raw_z2:.4f}m  bsd_z={bsd_z2:.4f}m  scale={scale2:.4f}\n"
+                    f"  Scale ratio : {scale2/depth_scale:.4f}  (1.0 = pure multiplicative error)\n"
+                    f"  Affine fit  : depth_true = {aff_a:.4f} * raw + {aff_b:.4f}m\n"
+                    f"────────────────────────────────────────────────────────")
 
             d_scaled  = (depth_occ * depth_scale_occ) if occluded else (depth * depth_scale)
 
