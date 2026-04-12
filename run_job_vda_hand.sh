@@ -24,4 +24,7 @@ mkdir -p logs
     --debug_dir /work/courses/3dv/team22/foundationpose/debug/duck_vda_hand \
     --est_refine_iter 2 \
     --track_refine_iter 2 \
-    --debug 2
+    --debug 2 \
+    --h5_file /work/courses/3dv/team22/foundationpose/data/20250804_104715.h5 \
+    --urdf_file /home/hudela/pandaorca_description/urdf/fer_orcahand_right_extended.urdf \
+    --hand_calib_frame 200
