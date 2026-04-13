@@ -152,8 +152,6 @@ def main():
     # ── Load model ──────────────────────────────────────────────────────────
     print("Loading model...")
     model = DepthAnything3(model_name=model_name).to(device)
-    if use_amp:
-        model = model.half()
     model.eval()
     print("Model ready.")
 
