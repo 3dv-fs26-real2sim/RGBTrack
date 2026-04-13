@@ -51,7 +51,7 @@ from PIL import Image
 
 # ── Import DA3 from sibling DepthAnything3/ subfolder ──────────────────────
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, os.path.join(_SCRIPT_DIR, "DepthAnything3"))
+sys.path.insert(0, os.path.join(_SCRIPT_DIR, "DepthAnything3", "src"))
 from depth_anything_3.api import DepthAnything3
 # ───────────────────────────────────────────────────────────────────────────
 
