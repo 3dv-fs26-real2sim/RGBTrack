@@ -113,7 +113,9 @@ def align_scale(depth_ref, depth_new, mask=None):
     return float(np.median(ratio))
 
 
-def save_frame(depth_m, out_dir, id_str, save_npy=False):
+def save_frame(depth_m, out_dir, id_str, orig_hw=None, save_npy=False):
+    if orig_hw is not None and depth_m.shape != orig_hw:
+        depth_m = cv2.resize(depth_m, (orig_hw[1], orig_hw[0]), interpolation=cv2.INTER_LINEAR)
     d_mm = np.clip(depth_m * 1000.0, 0, 65535).astype(np.uint16)
     cv2.imwrite(os.path.join(out_dir, f"{id_str}.png"), d_mm)
     if save_npy:
@@ -148,6 +150,11 @@ def main():
 
     if N == 0:
         raise RuntimeError(f"No PNGs found in {args.scene_dir}/rgb/")
+
+    # Original image size — depth maps will be resized to match
+    _orig = np.array(Image.open(color_files[0]))
+    ORIG_H, ORIG_W = _orig.shape[:2]
+    print(f"Original image size: {ORIG_H}x{ORIG_W}")
 
     # ── Load model ──────────────────────────────────────────────────────────
     print("Loading model...")
@@ -243,7 +250,7 @@ def main():
             if w_total < 1e-9:
                 continue
             depth_final = (depth_acc[fi] / w_total).astype(np.float32)
-            save_frame(depth_final, out_dir, id_strs[fi], save_npy=args.save_npy)
+            save_frame(depth_final, out_dir, id_strs[fi], orig_hw=(ORIG_H, ORIG_W), save_npy=args.save_npy)
 
         prev_end = save_up_to
 
@@ -253,7 +260,7 @@ def main():
         if w_total < 1e-9:
             continue
         depth_final = (depth_acc[fi] / w_total).astype(np.float32)
-        save_frame(depth_final, out_dir, id_strs[fi], save_npy=args.save_npy)
+        save_frame(depth_final, out_dir, id_strs[fi], orig_hw=(ORIG_H, ORIG_W), save_npy=args.save_npy)
 
     print(f"Done — {N} depth PNGs saved to {out_dir}")
 
