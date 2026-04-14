@@ -21,7 +21,7 @@ mkdir -p logs
 /work/courses/3dv/team22/py310_env/bin/python run_demo_raw_depth.py \
     --mesh_file      /work/courses/3dv/team22/foundationpose/data/object/duck/duck.obj \
     --test_scene_dir /work/courses/3dv/team22/foundationpose/data/20250804_104715 \
-    --pred_depth_dir /cluster/courses/3dv/team22/scaled_with_depth/depth_png \
+    --pred_depth_dir /work/courses/3dv/team22/scaled_with_desk/depth_png \
     --debug_dir      /work/courses/3dv/team22/foundationpose/debug/duck_raw_depth \
     --est_refine_iter 2 \
     --track_refine_iter 2 \
