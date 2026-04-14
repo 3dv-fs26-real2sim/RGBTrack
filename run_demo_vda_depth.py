@@ -139,7 +139,7 @@ if __name__ == "__main__":
         mask = cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE)
         mask = (mask > 127).astype(np.uint8)
 
-        depth_cal = calibrate_depth(depth_vda, depth_sim)
+        depth_cal = depth_vda  # VDA metric depth used directly; sim GT mismatch makes calibration counterproductive
 
         if i == 0:
             pose = est.register(reader.K, color, depth_cal, mask, args.est_refine_iter)
