@@ -1,8 +1,12 @@
 """
-FoundationPose tracking using pre-generated Video Depth Anything depth maps.
+FoundationPose tracking using VDA streaming depth maps calibrated against sim GT.
 
-Depth maps must be uint16 PNG files (mm) in test_scene_dir/depth/.
-SAM2 video masks must be in test_scene_dir/masks/.
+VDA depth:    uint16 PNG (mm) in --pred_depth_dir  (default: test_scene_dir/depth_vda_streaming/)
+Sim GT depth: uint16 PNG (mm) in test_scene_dir/depth/
+Masks:        test_scene_dir/masks/
+
+Per-frame affine calibration (scale + shift) is fit on a static table ROI using
+RANSAC, then applied to the full VDA depth map before passing to FoundationPose.
 """
 import time
 from estimater import *
@@ -74,9 +78,12 @@ if __name__ == "__main__":
     parser.add_argument("--debug", type=int, default=1)
     parser.add_argument("--debug_dir", type=str, default=f"{code_dir}/debug")
     parser.add_argument("--num_frames", type=int, default=None, help="Process only the first N frames (default: all)")
-    parser.add_argument("--sim_depth", type=str, default=f"{code_dir}/table_depth_masked.npz",
-                        help="Path to sim ground-truth depth NPZ (N,H,W) float32 metres")
+    parser.add_argument("--pred_depth_dir", type=str, default=None,
+                        help="Directory of VDA depth PNGs (uint16 mm). Defaults to test_scene_dir/depth_vda_streaming/")
     args = parser.parse_args()
+
+    if args.pred_depth_dir is None:
+        args.pred_depth_dir = os.path.join(args.test_scene_dir, "depth_vda_streaming")
 
     set_logging_format()
     set_seed(0)
@@ -108,13 +115,8 @@ if __name__ == "__main__":
 
     reader = YcbineoatReader(video_dir=args.test_scene_dir, shorter_side=None, zfar=np.inf)
 
-    # Load sim ground-truth depths (N, H, W) float32 metres, Aria POV — non-table pixels are 0
-    _npz = np.load(args.sim_depth)
-    _keys = list(_npz.keys())
-    # Try common key names; fall back to first key
-    _key = next((k for k in ("depths", "depth", "arr_0") if k in _keys), _keys[0])
-    sim_depths = _npz[_key]  # (N, H, W) float32 metres
-    logging.info(f"Loaded sim depths from '{args.sim_depth}' key='{_key}': shape={sim_depths.shape}, dtype={sim_depths.dtype}, range=[{sim_depths.min():.3f}, {sim_depths.max():.3f}]")
+    logging.info(f"VDA depth dir : {args.pred_depth_dir}")
+    logging.info(f"Sim GT depth  : {os.path.join(args.test_scene_dir, 'depth/')}")
 
     frame0_mask_area = None
     last_good_rotation = None
@@ -125,14 +127,19 @@ if __name__ == "__main__":
         color = reader.get_color(i)
         t1 = time.time()
 
-        depth_path = os.path.join(args.test_scene_dir, "depth", f"{reader.id_strs[i]}.png")
-        depth = cv2.imread(depth_path, cv2.IMREAD_UNCHANGED).astype(np.float32) / 1000.0
+        # VDA predicted depth (monocular, needs calibration)
+        vda_path = os.path.join(args.pred_depth_dir, f"{reader.id_strs[i]}.png")
+        depth_vda = cv2.imread(vda_path, cv2.IMREAD_UNCHANGED).astype(np.float32) / 1000.0
+
+        # Sim GT depth (Isaac Sim, metric reference for calibration)
+        simgt_path = os.path.join(args.test_scene_dir, "depth", f"{reader.id_strs[i]}.png")
+        depth_sim = cv2.imread(simgt_path, cv2.IMREAD_UNCHANGED).astype(np.float32) / 1000.0
 
         mask_path = os.path.join(args.test_scene_dir, "masks", f"{reader.id_strs[i]}.png")
         mask = cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE)
         mask = (mask > 127).astype(np.uint8)
 
-        depth_cal = calibrate_depth(depth, sim_depths[i])
+        depth_cal = calibrate_depth(depth_vda, depth_sim)
 
         if i == 0:
             pose = est.register(reader.K, color, depth_cal, mask, args.est_refine_iter)
