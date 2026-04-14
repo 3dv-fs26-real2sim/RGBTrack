@@ -80,6 +80,9 @@ if __name__ == "__main__":
     parser.add_argument("--num_frames", type=int, default=None, help="Process only the first N frames (default: all)")
     parser.add_argument("--pred_depth_dir", type=str, default=None,
                         help="Directory of VDA depth PNGs (uint16 mm). Defaults to test_scene_dir/depth_vda_streaming/")
+    parser.add_argument("--sim_depth", type=str,
+                        default="/work/courses/3dv/team22/table_depth_masked.npz",
+                        help="Static sim GT depth NPZ (H,W) float32 metres, Aria POV")
     args = parser.parse_args()
 
     if args.pred_depth_dir is None:
@@ -115,8 +118,11 @@ if __name__ == "__main__":
 
     reader = YcbineoatReader(video_dir=args.test_scene_dir, shorter_side=None, zfar=np.inf)
 
-    logging.info(f"VDA depth dir : {args.pred_depth_dir}")
-    logging.info(f"Sim GT depth  : {os.path.join(args.test_scene_dir, 'depth/')}")
+    # Load static sim GT (single Aria-POV frame, camera is static so one frame suffices)
+    _npz = np.load(args.sim_depth)
+    depth_sim_static = _npz["depth"]  # (480, 640) float32 metres
+    logging.info(f"Sim GT loaded: {args.sim_depth} — shape={depth_sim_static.shape}, max={depth_sim_static.max():.3f}m")
+    logging.info(f"VDA depth dir: {args.pred_depth_dir}")
 
     frame0_mask_area = None
     last_good_rotation = None
@@ -131,15 +137,11 @@ if __name__ == "__main__":
         vda_path = os.path.join(args.pred_depth_dir, f"{reader.id_strs[i]}.png")
         depth_vda = cv2.imread(vda_path, cv2.IMREAD_UNCHANGED).astype(np.float32) / 1000.0
 
-        # Sim GT depth (Isaac Sim, metric reference for calibration)
-        simgt_path = os.path.join(args.test_scene_dir, "depth", f"{reader.id_strs[i]}.png")
-        depth_sim = cv2.imread(simgt_path, cv2.IMREAD_UNCHANGED).astype(np.float32) / 1000.0
-
         mask_path = os.path.join(args.test_scene_dir, "masks", f"{reader.id_strs[i]}.png")
         mask = cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE)
         mask = (mask > 127).astype(np.uint8)
 
-        depth_cal = depth_vda  # VDA metric depth used directly; sim GT mismatch makes calibration counterproductive
+        depth_cal = calibrate_depth(depth_vda, depth_sim_static)
 
         if i == 0:
             pose = est.register(reader.K, color, depth_cal, mask, args.est_refine_iter)
