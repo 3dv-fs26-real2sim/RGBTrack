@@ -20,19 +20,21 @@ SCENE_DIR = "/work/courses/3dv/team22/foundationpose/data/20250804_104715"
 DEBUG_DIR  = "/work/courses/3dv/team22/foundationpose/debug"
 
 DEPTH_DIRS = {
-    "vda":       "depth",
-    "da3":       "depth_da3",
-    "metric3d":  "depth_metric3d",
-    "depth_pro": "depth_pro",
-    "vggt":      "depth_vggt",
+    "vda":           "depth",
+    "vda_streaming": "depth_vda_streaming",
+    "da3":           "depth_da3",
+    "metric3d":      "depth_metric3d",
+    "depth_pro":     "depth_pro",
+    "vggt":          "depth_vggt",
 }
 
 COLORS = {
-    "vda":       "#4C72B0",
-    "da3":       "#DD8452",
-    "metric3d":  "#55A868",
-    "depth_pro": "#C44E52",
-    "vggt":      "#8172B3",
+    "vda":           "#4C72B0",
+    "vda_streaming": "#2196F3",
+    "da3":           "#DD8452",
+    "metric3d":      "#55A868",
+    "depth_pro":     "#C44E52",
+    "vggt":          "#8172B3",
 }
 
 DEPTH_MIN = 0.05   # m
