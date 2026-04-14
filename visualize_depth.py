@@ -25,6 +25,23 @@ import cv2
 from datareader import YcbineoatReader
 from estimater import *
 from tools import *
+from sklearn.linear_model import RANSACRegressor
+
+_ROI = (280, 480, 0, 300)
+
+def calibrate_depth(d_pred, d_sim, roi=_ROI):
+    y1, y2, x1, x2 = roi
+    pred_patch = d_pred[y1:y2, x1:x2].flatten()
+    sim_patch  = d_sim [y1:y2, x1:x2].flatten()
+    valid = (pred_patch > 0.001) & (sim_patch > 0.001)
+    pred_valid, sim_valid = pred_patch[valid], sim_patch[valid]
+    if len(pred_valid) < 10:
+        return d_pred.copy()
+    ransac = RANSACRegressor(random_state=42)
+    ransac.fit(pred_valid.reshape(-1, 1), sim_valid)
+    scale = float(ransac.estimator_.coef_[0])
+    shift = float(ransac.estimator_.intercept_)
+    return np.maximum(scale * d_pred + shift, 0.0)
 
 CMAP = cv2.COLORMAP_PLASMA   # colormap for depth
 
@@ -136,6 +153,8 @@ def main():
                         help="Hard cutoff in metres (after scaling): pixels at or beyond this are zeroed")
     parser.add_argument("--label", type=str, default=None,
                         help="Label shown in video (defaults to --source value)")
+    parser.add_argument("--sim_depth", type=str, default=None,
+                        help="Path to table_depth_masked.npz — applies RANSAC calibration per frame")
     parser.add_argument("--calibrate", action="store_true",
                         help="Run binary_search_depth on frame 0 to compute depth scale (same as tracking pipeline)")
     parser.add_argument("--mesh_file", type=str,
@@ -145,6 +164,12 @@ def main():
 
     out_video = args.out_video or os.path.join(
         args.test_scene_dir, f"depth_{args.source}.mp4")
+
+    # Load static sim GT for RANSAC calibration (optional)
+    depth_sim_static = None
+    if args.sim_depth:
+        depth_sim_static = np.load(args.sim_depth)["depth"]  # (H, W) float32 metres
+        print(f"Sim GT loaded: {args.sim_depth} — max={depth_sim_static.max():.3f}m")
 
     reader = YcbineoatReader(video_dir=args.test_scene_dir, shorter_side=None, zfar=float("inf"))
 
@@ -191,7 +216,7 @@ def main():
     sample_depths = []
     for i in range(min(50, len(reader.color_files))):
         color = reader.get_color(i)
-        depth = _get_depth(i, color, reader, args, depth_model)
+        depth = _get_depth(i, color, reader, args, depth_model, depth_sim_static)
         if depth is not None:
             sample_depths.append(depth * depth_scale)
 
@@ -216,7 +241,7 @@ def main():
 
     for i in range(len(reader.color_files)):
         color  = reader.get_color(i)
-        depth  = _get_depth(i, color, reader, args, depth_model)
+        depth  = _get_depth(i, color, reader, args, depth_model, depth_sim_static)
         if depth is None:
             continue
         depth  = mask_background(depth * depth_scale, table_cutoff)
@@ -230,13 +255,15 @@ def main():
     print(f"Saved to {out_video}")
 
 
-def _get_depth(i, color, reader, args, depth_model):
+def _get_depth(i, color, reader, args, depth_model, depth_sim_static=None):
+    raw_depth = None
+
     if args.source == "vda":
         path = os.path.join(args.test_scene_dir, "depth", f"{reader.id_strs[i]}.png")
         raw  = cv2.imread(path, cv2.IMREAD_UNCHANGED)
         if raw is None:
             return None
-        return raw.astype(np.float32) / 1000.0
+        raw_depth = raw.astype(np.float32) / 1000.0
 
     elif args.source == "depth_pro_maps":
         maps_dir = args.depth_pro_maps_dir or os.path.join(args.test_scene_dir, "depth_pro")
@@ -244,7 +271,7 @@ def _get_depth(i, color, reader, args, depth_model):
         raw  = cv2.imread(path, cv2.IMREAD_UNCHANGED)
         if raw is None:
             return None
-        return raw.astype(np.float32) / 1000.0
+        raw_depth = raw.astype(np.float32) / 1000.0
 
     elif args.source == "custom":
         assert args.depth_dir, "--depth_dir required with --source custom"
@@ -252,12 +279,17 @@ def _get_depth(i, color, reader, args, depth_model):
         raw  = cv2.imread(path, cv2.IMREAD_UNCHANGED)
         if raw is None:
             return None
-        return raw.astype(np.float32) / 1000.0
+        raw_depth = raw.astype(np.float32) / 1000.0
 
     elif depth_model is not None:
-        return depth_model.estimate(color, reader.K)
+        raw_depth = depth_model.estimate(color, reader.K)
 
-    return None
+    if raw_depth is None:
+        return None
+
+    if depth_sim_static is not None:
+        return calibrate_depth(raw_depth, depth_sim_static)
+    return raw_depth
 
 
 if __name__ == "__main__":
