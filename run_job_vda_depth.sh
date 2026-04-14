@@ -29,4 +29,5 @@ mkdir -p logs
     --debug_dir /work/courses/3dv/team22/foundationpose/debug/duck_vda \
     --est_refine_iter 2 \
     --track_refine_iter 2 \
-    --debug 2
+    --debug 2 \
+    --num_frames 1

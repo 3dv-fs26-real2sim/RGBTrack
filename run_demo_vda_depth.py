@@ -11,6 +11,34 @@ import argparse
 from tools import *
 import numpy as np
 from scipy.spatial.transform import Rotation as ScipyR
+from sklearn.linear_model import RANSACRegressor
+
+# ── ROI-based per-frame depth calibration ─────────────────────────────────────
+# Safe zone: bottom-left 300×200 pixels of the 640×480 image (table surface).
+# Confirmed static — nothing enters this region during any sequence.
+_ROI = (280, 480, 0, 300)  # (y1, y2, x1, x2)
+
+def calibrate_depth(d_pred, d_sim, roi=_ROI):
+    """
+    Fit affine (scale, shift) from predicted to sim depth using a static table ROI.
+    Uses RANSAC to reject specular highlights / shadow outliers in the patch.
+    Returns the full-frame calibrated depth map.
+    """
+    y1, y2, x1, x2 = roi
+    pred_patch = d_pred[y1:y2, x1:x2].flatten()
+    sim_patch  = d_sim [y1:y2, x1:x2].flatten()
+    valid = (pred_patch > 0.001) & (sim_patch > 0.001)
+    pred_valid = pred_patch[valid]
+    sim_valid  = sim_patch [valid]
+    if len(pred_valid) < 10:
+        logging.warning("calibrate_depth: too few valid ROI pixels — returning raw depth")
+        return d_pred.copy()
+    ransac = RANSACRegressor(random_state=42)
+    ransac.fit(pred_valid.reshape(-1, 1), sim_valid)
+    scale = float(ransac.estimator_.coef_[0])
+    shift = float(ransac.estimator_.intercept_)
+    return np.maximum(scale * d_pred + shift, 0.0)
+# ──────────────────────────────────────────────────────────────────────────────
 
 SAVE_VIDEO = False
 
@@ -45,6 +73,9 @@ if __name__ == "__main__":
     parser.add_argument("--track_refine_iter", type=int, default=1)
     parser.add_argument("--debug", type=int, default=1)
     parser.add_argument("--debug_dir", type=str, default=f"{code_dir}/debug")
+    parser.add_argument("--num_frames", type=int, default=None, help="Process only the first N frames (default: all)")
+    parser.add_argument("--sim_depth", type=str, default=f"{code_dir}/table_depth_masked.npz",
+                        help="Path to sim ground-truth depth NPZ (N,H,W) float32 metres")
     args = parser.parse_args()
 
     set_logging_format()
@@ -77,12 +108,20 @@ if __name__ == "__main__":
 
     reader = YcbineoatReader(video_dir=args.test_scene_dir, shorter_side=None, zfar=np.inf)
 
+    # Load sim ground-truth depths (N, H, W) float32 metres, Aria POV — non-table pixels are 0
+    _npz = np.load(args.sim_depth)
+    _keys = list(_npz.keys())
+    # Try common key names; fall back to first key
+    _key = next((k for k in ("depths", "depth", "arr_0") if k in _keys), _keys[0])
+    sim_depths = _npz[_key]  # (N, H, W) float32 metres
+    logging.info(f"Loaded sim depths from '{args.sim_depth}' key='{_key}': shape={sim_depths.shape}, dtype={sim_depths.dtype}, range=[{sim_depths.min():.3f}, {sim_depths.max():.3f}]")
+
     frame0_mask_area = None
-    depth_scale = 1.0
     last_good_rotation = None
     was_occluded = False
 
-    for i in range(len(reader.color_files)):
+    num_frames = args.num_frames if args.num_frames is not None else len(reader.color_files)
+    for i in range(min(num_frames, len(reader.color_files))):
         color = reader.get_color(i)
         t1 = time.time()
 
@@ -93,42 +132,37 @@ if __name__ == "__main__":
         mask = cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE)
         mask = (mask > 127).astype(np.uint8)
 
+        depth_cal = calibrate_depth(depth, sim_depths[i])
+
         if i == 0:
-            pose = binary_search_depth(est, mesh, color, mask.astype(bool), reader.K, debug=True)
+            pose = est.register(reader.K, color, depth_cal, mask, args.est_refine_iter)
             logging.info(f"Initial pose:\n{pose}")
             frame0_mask_area = float(mask.sum())
             last_good_rotation = pose[:3, :3].copy()
-            obj_pixels = mask > 0
-            vda_z = depth[obj_pixels].mean() if obj_pixels.any() else 1.0
-            bsd_z = float(pose[2, 3])
-            depth_scale = bsd_z / vda_z if vda_z > 0 else 1.0
-            logging.info(f"Depth scale: {depth_scale:.3f}")
         else:
             mask_area = float(mask.sum())
             occluded = (frame0_mask_area > 0) and (mask_area < OCCLUSION_THRESHOLD * frame0_mask_area)
 
             pose = est.track_one_new(
-                rgb=color, depth=depth * depth_scale, K=reader.K,
+                rgb=color, depth=depth_cal, K=reader.K,
                 iteration=args.track_refine_iter, mask=mask
             )
 
             if occluded:
-                # fully freeze rotation, but accept if very close to last good
                 delta = rotation_delta_deg(last_good_rotation, pose[:3, :3])
                 if delta <= MAX_ROT_DELTA_DEG:
-                    last_good_rotation = pose[:3, :3].copy()  # subtle real motion — accept
+                    last_good_rotation = pose[:3, :3].copy()
                 else:
-                    pose[:3, :3] = last_good_rotation  # spike — reject
+                    pose[:3, :3] = last_good_rotation
                 was_occluded = True
             elif was_occluded:
-                # still frozen until mask recovers above RECOVERY_THRESHOLD
                 if mask_area >= RECOVERY_THRESHOLD * frame0_mask_area:
-                    logging.info(f"[frame {i}] Recovery re-init with binary_search_depth")
-                    pose = binary_search_depth(est, mesh, color, mask.astype(bool), reader.K, debug=False)
+                    logging.info(f"[frame {i}] Recovery re-init with calibrated depth")
+                    pose = est.register(reader.K, color, depth_cal, mask, args.est_refine_iter)
                     last_good_rotation = pose[:3, :3].copy()
                     was_occluded = False
                 else:
-                    pose[:3, :3] = last_good_rotation  # not recovered enough yet — stay frozen
+                    pose[:3, :3] = last_good_rotation
             else:
                 last_good_rotation = pose[:3, :3].copy()
 
