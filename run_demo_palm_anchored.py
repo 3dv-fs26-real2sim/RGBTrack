@@ -1,22 +1,33 @@
 """
-FoundationPose duck tracker — palm-anchored occlusion handling.
+FoundationPose duck tracker — palm-anchored, flow-driven state machine.
 
-Based on run_demo_vda_hand.py. Adds:
-  * Optical-flow movement detection on duck-mask edge pixels.
-  * Palm-anchored pose propagation when the object is occluded AND moving:
-      T_cam_obj[t] = T_cam_palm[t] @ inv(T_cam_palm[t0]) @ T_cam_obj[t0]
-    where t0 is the last frame in FREE state (or the frame at which
-    static → moving transition was detected inside occlusion).
-  * Freeze the pose when occluded AND not moving.
-  * ScoreNet gate intentionally disabled to see raw pose output.
+Occlusion is NOT checked. State is driven entirely by optical flow on the
+duck mask, with a debounce buffer to avoid flapping.
+
+States (STATIC ↔ MOVING):
+  * STATIC: pose frozen. FP is NOT run per-frame.
+  * MOVING: pose = T_cam_palm[t] @ inv(T_cam_palm[t0]) @ T_cam_obj[t0]
+    where t0 = last STATIC→MOVING transition frame.
+
+Transitions:
+  * STATIC → MOVING: anchor palm_inv at this frame (anchor_pose = last frozen).
+  * MOVING → STATIC: run FP once to re-acquire the pose (it may have drifted
+    during palm-delta propagation), then freeze.
+
+Transitions require N consecutive flow-agreement frames. Unreliable flow
+signal (mask too small or too few trackable points) resets the buffer.
+
+Init (frame 0):
+  * binary_search_depth → first pose. State = STATIC. Anchor set.
 
 Inputs:
-  --test_scene_dir/depth/       VDA depth PNGs (uint16 mm)
-  --test_scene_dir/masks/       SAM2VP duck masks
-  --palm_poses_npz              (N,4,4) T_cam_palm per RGB frame (Aria frame)
+  --test_scene_dir/depth/       VDA depth PNGs (uint16 mm) — used only for
+                                the one-shot FP re-acquire at transitions.
+  --test_scene_dir/masks/       SAM2VP duck masks.
+  --palm_poses_npz              (N,4,4) T_cam_palm per RGB frame (Aria frame).
 
-Assumes the palm NPZ is 1:1 aligned with the RGB frame index. If not,
-pass a remapping via --palm_frame_offset / --palm_frame_stride.
+Assumes the palm NPZ is 1:1 aligned with the RGB frame index. If not, pass
+a remapping via --palm_frame_offset / --palm_frame_stride.
 """
 import time
 import os
@@ -33,11 +44,12 @@ from tools import *
 
 
 # ── Settings ───────────────────────────────────────────────────────────────────
-OCCLUSION_THRESHOLD = 0.90    # duck mask below this × frame0 area → occluded
+# Occlusion is NOT used anymore — state is driven entirely by optical flow.
 
 MOVE_FLOW_THRESH_PX = 1.5     # median optical-flow magnitude (px) → moving
 MOVE_MIN_TRACK_PTS  = 8       # need at least this many tracked points to trust the signal
 MOVE_MIN_MASK_AREA  = 400     # below this the mask is too small to extract features
+STATE_BUFFER_FRAMES = 5       # need N consecutive agreeing flow signals to flip state
 
 LOG_INTERVAL        = 5
 # ──────────────────────────────────────────────────────────────────────────────
@@ -148,27 +160,24 @@ if __name__ == "__main__":
                           cv2.IMREAD_UNCHANGED).astype(np.float32) / 1000.0
 
     # Anchor state for palm-delta propagation
-    anchor_pose     = None    # T_cam_obj at t0 (numpy 4x4)
-    anchor_palm_inv = None    # inv(T_cam_palm[t0])
+    anchor_pose     = None    # T_cam_obj at anchor frame (numpy 4x4)
+    anchor_palm_inv = None    # inv(T_cam_palm[anchor_frame])
 
-    # Sticky state & previous-frame buffers for optical flow
-    prev_state     = "FREE"   # FREE | OCCL_STATIC | OCCL_MOVING
-    prev_moving    = False
+    # State machine: STATIC ↔ MOVING, driven by optical flow with debounce buffer
+    state          = "STATIC"
+    buffer_count   = 0        # consecutive flow frames disagreeing with current state
     prev_gray      = None
     prev_mask      = None
 
-    frame0_mask_area = None
-    depth_scale      = 1.0
-    depth_scale_occ  = 1.0
-    pose             = None   # most recent accepted pose (numpy 4x4)
+    depth_scale = 1.0
+    pose        = None
 
     for i in range(len(reader.color_files)):
         color = reader.get_color(i)
         gray  = cv2.cvtColor(color, cv2.COLOR_RGB2GRAY)
         t1    = time.time()
 
-        depth     = load_depth_png(depth_dir_vis, reader.id_strs[i])
-        depth_occ = load_depth_png(depth_dir_occ, reader.id_strs[i])
+        depth = load_depth_png(depth_dir_vis, reader.id_strs[i])
 
         mask_path = os.path.join(args.test_scene_dir, "masks", f"{reader.id_strs[i]}.png")
         mask = (cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE) > 127).astype(np.uint8)
@@ -180,60 +189,61 @@ if __name__ == "__main__":
             pose = binary_search_depth(est, mesh, color, mask.astype(bool), reader.K, debug=True)
             logging.info(f"Initial duck pose:\n{pose}")
 
-            frame0_mask_area = float(mask.sum())
             obj_pixels = mask > 0
             bsd_z      = float(pose[2, 3])
             vda_z      = depth[obj_pixels].mean() if obj_pixels.any() else 1.0
-            occ_z      = depth_occ[obj_pixels].mean() if obj_pixels.any() else 1.0
-            depth_scale     = bsd_z / vda_z if vda_z > 0 else 1.0
-            depth_scale_occ = bsd_z / occ_z if occ_z > 0 else 1.0
-            logging.info(f"Depth scale (vis): {depth_scale:.3f}  (occ): {depth_scale_occ:.3f}")
+            depth_scale = bsd_z / vda_z if vda_z > 0 else 1.0
+            logging.info(f"Depth scale: {depth_scale:.3f}")
 
             anchor_pose     = pose.copy()
             anchor_palm_inv = np.linalg.inv(T_cam_palm)
-            state           = "FREE"
 
         else:
-            mask_area = float(mask.sum())
-            occluded  = (frame0_mask_area > 0) and (mask_area < OCCLUSION_THRESHOLD * frame0_mask_area)
-
-            # Movement signal (sticky on unreliable / no signal).
             moving_now, flow_med = mask_is_moving(prev_gray, gray, prev_mask, mask)
-            moving = prev_moving if moving_now is None else moving_now
 
-            if not occluded:
-                state   = "FREE"
-                d_scaled = depth * depth_scale
-                pose = est.track_one(
-                    rgb=color, depth=d_scaled, K=reader.K,
-                    iteration=args.track_refine_iter,
-                )
-                anchor_pose     = pose.copy()
-                anchor_palm_inv = np.linalg.inv(T_cam_palm)
-
+            # Debounce buffer: only flip state after N consecutive agreeing frames.
+            # Unreliable signal (moving_now is None) resets the counter.
+            transitioned = False
+            if moving_now is None:
+                buffer_count = 0
             else:
-                if moving:
-                    state = "OCCL_MOVING"
-                    # Re-anchor at static → moving transition: object starts moving
-                    # from its last-known position, not from the free-tracking pose.
-                    if prev_state == "OCCL_STATIC":
-                        anchor_pose     = pose.copy()
-                        anchor_palm_inv = np.linalg.inv(T_cam_palm)
-                    pose = T_cam_palm @ anchor_palm_inv @ anchor_pose
-                    # Keep FP's internal state aligned so a future re-acquire
-                    # starts close to our propagated pose.
-                    est.pose_last = torch.from_numpy(pose).float().cuda()
+                flow_says_moving = bool(moving_now)
+                currently_moving = (state == "MOVING")
+                if flow_says_moving != currently_moving:
+                    buffer_count += 1
+                    if buffer_count >= STATE_BUFFER_FRAMES:
+                        new_state = "MOVING" if flow_says_moving else "STATIC"
+                        if new_state == "MOVING":
+                            # STATIC → MOVING: anchor palm at this frame; the last
+                            # frozen pose is already in anchor_pose.
+                            anchor_pose     = pose.copy()
+                            anchor_palm_inv = np.linalg.inv(T_cam_palm)
+                        else:
+                            # MOVING → STATIC: re-acquire via FP once, then freeze.
+                            d_scaled = depth * depth_scale
+                            pose = est.track_one(
+                                rgb=color, depth=d_scaled, K=reader.K,
+                                iteration=args.track_refine_iter,
+                            )
+                            anchor_pose     = pose.copy()
+                            anchor_palm_inv = np.linalg.inv(T_cam_palm)
+                        state = new_state
+                        buffer_count = 0
+                        transitioned = True
                 else:
-                    state = "OCCL_STATIC"
-                    # freeze: pose unchanged from previous frame
+                    buffer_count = 0
+
+            # Per-frame pose update based on (possibly just-flipped) state.
+            # If we just transitioned MOVING→STATIC we already ran FP above.
+            if state == "MOVING" and not transitioned:
+                pose = T_cam_palm @ anchor_palm_inv @ anchor_pose
+                est.pose_last = torch.from_numpy(pose).float().cuda()
+            # STATIC (no transition) or STATIC after transition: keep pose.
 
             if i % LOG_INTERVAL == 0:
-                logging.info(f"[frame {i}] state={state}  occluded={occluded}  "
-                             f"moving={moving}  flow_med={flow_med:.2f}px  "
-                             f"mask_area_ratio={mask_area/max(frame0_mask_area,1):.2f}")
-
-            prev_state  = state
-            prev_moving = moving
+                logging.info(f"[frame {i}] state={state}  buf={buffer_count}  "
+                             f"flow_med={flow_med:.2f}px  "
+                             f"moving_sig={moving_now}")
 
         prev_gray = gray
         prev_mask = mask
@@ -244,7 +254,7 @@ if __name__ == "__main__":
 
         if args.debug >= 1:
             center_pose = pose @ np.linalg.inv(to_origin)
-            color = cv2.putText(color, f"fps {int(1/(t2-t1))} {state if i>0 else 'INIT'}",
+            color = cv2.putText(color, f"fps {int(1/(t2-t1))} {state}",
                                 (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 0, 0), 2)
             vis = draw_posed_3d_box(reader.K, img=color, ob_in_cam=center_pose, bbox=bbox)
             vis = draw_xyz_axis(color, ob_in_cam=center_pose, scale=0.1, K=reader.K,
