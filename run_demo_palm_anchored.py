@@ -1,39 +1,22 @@
 """
-FoundationPose duck tracker — palm-anchored, flow-driven state machine.
+FoundationPose duck tracker — palm-anchored occlusion handling.
 
-Occlusion is NOT checked. State is driven entirely by optical flow on the
-duck mask, with a debounce buffer to avoid flapping.
-
-States (STATIC ↔ MOVING):
-  * STATIC: pose frozen. FP is NOT run per-frame.
-  * MOVING: pose = T_cam_palm[t] @ inv(T_cam_palm[t0]) @ T_cam_obj[t0]
-    where t0 = last STATIC→MOVING transition frame.
-
-Transitions:
-  * STATIC → MOVING: anchor palm_inv at this frame (anchor_pose = last frozen).
-  * MOVING → STATIC: run FP once to re-acquire the pose (it may have drifted
-    during palm-delta propagation), then freeze.
-
-Hysteresis:
-  * STATIC → MOVING requires BUFFER_START_FRAMES consecutive frames with
-    flow_med > MOVE_FLOW_START_PX.
-  * MOVING → STATIC requires BUFFER_STOP_FRAMES consecutive frames with
-    flow_med < MOVE_FLOW_STOP_PX.
-Unreliable flow signal (mask too small, too few trackable points) is
-sticky — the buffer is neither advanced nor reset, so a brief full-
-occlusion blackout does not derail the state.
-
-Init (frame 0):
-  * binary_search_depth → first pose. State = STATIC. Anchor set.
+Based on run_demo_vda_hand.py. Adds:
+  * Optical-flow movement detection on duck-mask edge pixels.
+  * Palm-anchored pose propagation when the object is occluded AND moving:
+      T_cam_obj[t] = T_cam_palm[t] @ inv(T_cam_palm[t0]) @ T_cam_obj[t0]
+    where t0 is the last frame in FREE state (or the frame at which
+    static → moving transition was detected inside occlusion).
+  * Freeze the pose when occluded AND not moving.
+  * ScoreNet gate intentionally disabled to see raw pose output.
 
 Inputs:
-  --test_scene_dir/depth/       VDA depth PNGs (uint16 mm) — used only for
-                                the one-shot FP re-acquire at transitions.
-  --test_scene_dir/masks/       SAM2VP duck masks.
-  --palm_poses_npz              (N,4,4) T_cam_palm per RGB frame (Aria frame).
+  --test_scene_dir/depth/       VDA depth PNGs (uint16 mm)
+  --test_scene_dir/masks/       SAM2VP duck masks
+  --palm_poses_npz              (N,4,4) T_cam_palm per RGB frame (Aria frame)
 
-Assumes the palm NPZ is 1:1 aligned with the RGB frame index. If not, pass
-a remapping via --palm_frame_offset / --palm_frame_stride.
+Assumes the palm NPZ is 1:1 aligned with the RGB frame index. If not,
+pass a remapping via --palm_frame_offset / --palm_frame_stride.
 """
 import time
 import os
@@ -50,72 +33,55 @@ from tools import *
 
 
 # ── Settings ───────────────────────────────────────────────────────────────────
-# Occlusion is NOT used. Optical-flow drives STATIC/MOVING transitions.
-# Multiple STATIC↔MOVING cycles per sequence are allowed (no lock-out).
-# Entry is sensitive. Exit is strict: near-zero flow for a long window.
-MOVE_FLOW_START_PX    = 0.8    # flow > this (sustained) → enter MOVING
-MOVE_FLOW_STOP_PX     = 0.3    # flow < this (sustained) → exit MOVING
-BUFFER_START_FRAMES   = 4      # consecutive frames above START → flip to MOVING
-BUFFER_STOP_FRAMES    = 15     # consecutive frames below STOP → flip to STATIC
-MIN_MOVING_FRAMES     = 15     # require MOVING to last this long before STOP
+OCCLUSION_THRESHOLD = 0.90    # duck mask below this × frame0 area → occluded
 
-MOVE_MIN_TRACK_PTS    = 4      # below this, flow signal considered unreliable
-MOVE_MIN_MASK_AREA    = 100    # below this, mask too small to extract features
+MOVE_FLOW_THRESH_PX = 1.5     # median optical-flow magnitude (px) → moving
+MOVE_MIN_TRACK_PTS  = 8       # need at least this many tracked points to trust the signal
+MOVE_MIN_MASK_AREA  = 400     # below this the mask is too small to extract features
 
-LOG_INTERVAL          = 1      # log every frame to see flow values
+LOG_INTERVAL        = 5
 # ──────────────────────────────────────────────────────────────────────────────
 
 
 def extract_edge_features(gray: np.ndarray, mask: np.ndarray,
                           max_corners: int = 200) -> np.ndarray | None:
-    """goodFeaturesToTrack restricted to the duck mask interior.
-
-    Sampling inside the mask keeps features on duck texture. A thin boundary
-    band (previous approach) straddles the edge and leaks half the features
-    onto hand/background pixels — those stay static while the duck moves,
-    pulling median flow toward zero.
-    """
+    """goodFeaturesToTrack restricted to duck mask edge region."""
     if mask.sum() < MOVE_MIN_MASK_AREA:
         return None
-    # Erode 1 px to keep features off the anti-aliased outer ring of the mask.
-    interior = cv2.erode(
-        mask.astype(np.uint8) * 255,
-        cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3)),
-    )
-    if interior.sum() < MOVE_MIN_MASK_AREA:
-        interior = mask.astype(np.uint8) * 255
+    # Focus on the mask boundary (and its neighborhood) where textured edges live.
+    edge = cv2.morphologyEx(mask.astype(np.uint8) * 255, cv2.MORPH_GRADIENT,
+                            cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5)))
     pts = cv2.goodFeaturesToTrack(
         gray, maxCorners=max_corners, qualityLevel=0.01,
-        minDistance=4, mask=interior,
+        minDistance=4, mask=edge,
     )
     return pts
 
 
-def compute_mask_flow(prev_gray: np.ndarray | None, gray: np.ndarray,
-                      prev_mask: np.ndarray | None,
-                      mask: np.ndarray) -> float | None:
-    """LK optical flow on previous-frame edge points. Returns median flow (px).
+def mask_is_moving(prev_gray: np.ndarray | None, gray: np.ndarray,
+                   prev_mask: np.ndarray | None, mask: np.ndarray) -> tuple[bool | None, float]:
+    """LK optical flow on previous-frame edge points. Returns (moving, median_px).
 
-    Returns None if the signal is unreliable (mask too small, too few features,
-    or LK failed). Caller should treat None as "no evidence either way".
+    moving == None means "signal unreliable" — caller should keep previous state.
     """
     if prev_gray is None or prev_mask is None:
-        return None
+        return None, 0.0
     p0 = extract_edge_features(prev_gray, prev_mask)
     if p0 is None or len(p0) < MOVE_MIN_TRACK_PTS:
-        return None
+        return None, 0.0
     p1, status, _ = cv2.calcOpticalFlowPyrLK(
         prev_gray, gray, p0, None,
         winSize=(21, 21), maxLevel=3,
         criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 30, 0.01),
     )
     if p1 is None:
-        return None
+        return None, 0.0
     good = status.ravel() == 1
     if good.sum() < MOVE_MIN_TRACK_PTS:
-        return None
+        return None, 0.0
     disp = np.linalg.norm(p1[good] - p0[good], axis=2).ravel()
-    return float(np.median(disp))
+    med = float(np.median(disp))
+    return med > MOVE_FLOW_THRESH_PX, med
 
 
 def resolve_palm_idx(i: int, offset: int, stride: int, n_palm: int) -> int:
@@ -182,25 +148,27 @@ if __name__ == "__main__":
                           cv2.IMREAD_UNCHANGED).astype(np.float32) / 1000.0
 
     # Anchor state for palm-delta propagation
-    anchor_pose     = None    # T_cam_obj at anchor frame (numpy 4x4)
-    anchor_palm_inv = None    # inv(T_cam_palm[anchor_frame])
+    anchor_pose     = None    # T_cam_obj at t0 (numpy 4x4)
+    anchor_palm_inv = None    # inv(T_cam_palm[t0])
 
-    # State machine: STATIC ↔ MOVING, driven by optical flow with debounce buffer
-    state              = "STATIC"
-    buffer_count       = 0     # consecutive flow frames agreeing with transition
-    frames_in_state    = 0     # how long we've been in the current state
-    prev_gray          = None
-    prev_mask          = None
+    # Sticky state & previous-frame buffers for optical flow
+    prev_state     = "FREE"   # FREE | OCCL_STATIC | OCCL_MOVING
+    prev_moving    = False
+    prev_gray      = None
+    prev_mask      = None
 
-    depth_scale = 1.0
-    pose        = None
+    frame0_mask_area = None
+    depth_scale      = 1.0
+    depth_scale_occ  = 1.0
+    pose             = None   # most recent accepted pose (numpy 4x4)
 
     for i in range(len(reader.color_files)):
         color = reader.get_color(i)
         gray  = cv2.cvtColor(color, cv2.COLOR_RGB2GRAY)
         t1    = time.time()
 
-        depth = load_depth_png(depth_dir_vis, reader.id_strs[i])
+        depth     = load_depth_png(depth_dir_vis, reader.id_strs[i])
+        depth_occ = load_depth_png(depth_dir_occ, reader.id_strs[i])
 
         mask_path = os.path.join(args.test_scene_dir, "masks", f"{reader.id_strs[i]}.png")
         mask = (cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE) > 127).astype(np.uint8)
@@ -212,74 +180,60 @@ if __name__ == "__main__":
             pose = binary_search_depth(est, mesh, color, mask.astype(bool), reader.K, debug=True)
             logging.info(f"Initial duck pose:\n{pose}")
 
+            frame0_mask_area = float(mask.sum())
             obj_pixels = mask > 0
             bsd_z      = float(pose[2, 3])
             vda_z      = depth[obj_pixels].mean() if obj_pixels.any() else 1.0
-            depth_scale = bsd_z / vda_z if vda_z > 0 else 1.0
-            logging.info(f"Depth scale: {depth_scale:.3f}")
+            occ_z      = depth_occ[obj_pixels].mean() if obj_pixels.any() else 1.0
+            depth_scale     = bsd_z / vda_z if vda_z > 0 else 1.0
+            depth_scale_occ = bsd_z / occ_z if occ_z > 0 else 1.0
+            logging.info(f"Depth scale (vis): {depth_scale:.3f}  (occ): {depth_scale_occ:.3f}")
 
             anchor_pose     = pose.copy()
             anchor_palm_inv = np.linalg.inv(T_cam_palm)
+            state           = "FREE"
 
         else:
-            flow_med = compute_mask_flow(prev_gray, gray, prev_mask, mask)
-            frames_in_state += 1
+            mask_area = float(mask.sum())
+            occluded  = (frame0_mask_area > 0) and (mask_area < OCCLUSION_THRESHOLD * frame0_mask_area)
 
-            # Hysteresis: sensitive entry, strict exit. STOP is also gated by
-            # MIN_MOVING_FRAMES so a brief flow dip right after entering MOVING
-            # doesn't bounce us back to STATIC.
-            # Unreliable signal (None) is sticky — buffer neither advanced nor
-            # reset, so brief full-occlusion blackouts don't derail state.
-            transitioned = False
-            if flow_med is not None:
-                if state == "STATIC":
-                    threshold_met = flow_med > MOVE_FLOW_START_PX
-                    buffer_target = BUFFER_START_FRAMES
-                    next_state    = "MOVING"
-                    stop_gate_ok  = True
-                else:  # MOVING
-                    threshold_met = flow_med < MOVE_FLOW_STOP_PX
-                    buffer_target = BUFFER_STOP_FRAMES
-                    next_state    = "STATIC"
-                    stop_gate_ok  = frames_in_state >= MIN_MOVING_FRAMES
+            # Movement signal (sticky on unreliable / no signal).
+            moving_now, flow_med = mask_is_moving(prev_gray, gray, prev_mask, mask)
+            moving = prev_moving if moving_now is None else moving_now
 
-                if threshold_met and stop_gate_ok:
-                    buffer_count += 1
-                    if buffer_count >= buffer_target:
-                        if next_state == "MOVING":
-                            # STATIC → MOVING: anchor palm at this frame; the
-                            # last frozen pose is already in anchor_pose.
-                            anchor_pose     = pose.copy()
-                            anchor_palm_inv = np.linalg.inv(T_cam_palm)
-                        else:
-                            # MOVING → STATIC: re-acquire via FP once, freeze.
-                            d_scaled = depth * depth_scale
-                            pose = est.track_one(
-                                rgb=color, depth=d_scaled, K=reader.K,
-                                iteration=args.track_refine_iter,
-                            )
-                            anchor_pose     = pose.copy()
-                            anchor_palm_inv = np.linalg.inv(T_cam_palm)
-                        state = next_state
-                        buffer_count = 0
-                        frames_in_state = 0
-                        transitioned = True
+            if not occluded:
+                state   = "FREE"
+                d_scaled = depth * depth_scale
+                pose = est.track_one(
+                    rgb=color, depth=d_scaled, K=reader.K,
+                    iteration=args.track_refine_iter,
+                )
+                anchor_pose     = pose.copy()
+                anchor_palm_inv = np.linalg.inv(T_cam_palm)
+
+            else:
+                if moving:
+                    state = "OCCL_MOVING"
+                    # Re-anchor at static → moving transition: object starts moving
+                    # from its last-known position, not from the free-tracking pose.
+                    if prev_state == "OCCL_STATIC":
+                        anchor_pose     = pose.copy()
+                        anchor_palm_inv = np.linalg.inv(T_cam_palm)
+                    pose = T_cam_palm @ anchor_palm_inv @ anchor_pose
+                    # Keep FP's internal state aligned so a future re-acquire
+                    # starts close to our propagated pose.
+                    est.pose_last = torch.from_numpy(pose).float().cuda()
                 else:
-                    # evidence against transition — reset
-                    buffer_count = 0
-            # else: signal unreliable → keep buffer_count as-is (sticky)
-
-            # Per-frame pose update based on (possibly just-flipped) state.
-            # If we just transitioned MOVING→STATIC we already ran FP above.
-            if state == "MOVING" and not transitioned:
-                pose = T_cam_palm @ anchor_palm_inv @ anchor_pose
-                est.pose_last = torch.from_numpy(pose).float().cuda()
-            # STATIC (no transition) or STATIC after transition: keep pose.
+                    state = "OCCL_STATIC"
+                    # freeze: pose unchanged from previous frame
 
             if i % LOG_INTERVAL == 0:
-                flow_str = f"{flow_med:.2f}px" if flow_med is not None else "N/A"
-                logging.info(f"[frame {i}] state={state}  buf={buffer_count}  "
-                             f"in_state={frames_in_state}  flow_med={flow_str}")
+                logging.info(f"[frame {i}] state={state}  occluded={occluded}  "
+                             f"moving={moving}  flow_med={flow_med:.2f}px  "
+                             f"mask_area_ratio={mask_area/max(frame0_mask_area,1):.2f}")
+
+            prev_state  = state
+            prev_moving = moving
 
         prev_gray = gray
         prev_mask = mask
@@ -290,7 +244,7 @@ if __name__ == "__main__":
 
         if args.debug >= 1:
             center_pose = pose @ np.linalg.inv(to_origin)
-            color = cv2.putText(color, f"fps {int(1/(t2-t1))} {state}",
+            color = cv2.putText(color, f"fps {int(1/(t2-t1))} {state if i>0 else 'INIT'}",
                                 (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 0, 0), 2)
             vis = draw_posed_3d_box(reader.K, img=color, ob_in_cam=center_pose, bbox=bbox)
             vis = draw_xyz_axis(color, ob_in_cam=center_pose, scale=0.1, K=reader.K,
