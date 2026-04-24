@@ -51,19 +51,18 @@ from tools import *
 
 # ── Settings ───────────────────────────────────────────────────────────────────
 # Occlusion is NOT used. Optical-flow drives STATIC/MOVING transitions.
-# Entry is sensitive (original behavior). Exit is strict: must have been MOVING
-# a while AND flow must drop to near-zero for a long confirmation window.
-MOVE_FLOW_START_PX    = 1.5    # flow > this (sustained) → enter MOVING
+# Multiple STATIC↔MOVING cycles per sequence are allowed (no lock-out).
+# Entry is sensitive. Exit is strict: near-zero flow for a long window.
+MOVE_FLOW_START_PX    = 0.8    # flow > this (sustained) → enter MOVING
 MOVE_FLOW_STOP_PX     = 0.3    # flow < this (sustained) → exit MOVING
-BUFFER_START_FRAMES   = 5      # consecutive frames above START → flip to MOVING
+BUFFER_START_FRAMES   = 4      # consecutive frames above START → flip to MOVING
 BUFFER_STOP_FRAMES    = 15     # consecutive frames below STOP → flip to STATIC
-MIN_MOVING_FRAMES     = 15     # require MOVING to last at least this many frames
-                               # before STOP is allowed (ignores brief dips at entry)
+MIN_MOVING_FRAMES     = 15     # require MOVING to last this long before STOP
 
-MOVE_MIN_TRACK_PTS    = 8      # below this, flow signal considered unreliable
-MOVE_MIN_MASK_AREA    = 400    # below this, mask too small to extract features
+MOVE_MIN_TRACK_PTS    = 4      # below this, flow signal considered unreliable
+MOVE_MIN_MASK_AREA    = 100    # below this, mask too small to extract features
 
-LOG_INTERVAL          = 5
+LOG_INTERVAL          = 1      # log every frame to see flow values
 # ──────────────────────────────────────────────────────────────────────────────
 
 
