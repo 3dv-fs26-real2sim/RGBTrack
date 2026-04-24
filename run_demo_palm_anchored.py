@@ -14,8 +14,14 @@ Transitions:
   * MOVING → STATIC: run FP once to re-acquire the pose (it may have drifted
     during palm-delta propagation), then freeze.
 
-Transitions require N consecutive flow-agreement frames. Unreliable flow
-signal (mask too small or too few trackable points) resets the buffer.
+Hysteresis:
+  * STATIC → MOVING requires BUFFER_START_FRAMES consecutive frames with
+    flow_med > MOVE_FLOW_START_PX.
+  * MOVING → STATIC requires BUFFER_STOP_FRAMES consecutive frames with
+    flow_med < MOVE_FLOW_STOP_PX.
+Unreliable flow signal (mask too small, too few trackable points) is
+sticky — the buffer is neither advanced nor reset, so a brief full-
+occlusion blackout does not derail the state.
 
 Init (frame 0):
   * binary_search_depth → first pose. State = STATIC. Anchor set.
@@ -44,14 +50,20 @@ from tools import *
 
 
 # ── Settings ───────────────────────────────────────────────────────────────────
-# Occlusion is NOT used anymore — state is driven entirely by optical flow.
+# Occlusion is NOT used. Optical-flow drives STATIC/MOVING transitions.
+# Entry is sensitive (original behavior). Exit is strict: must have been MOVING
+# a while AND flow must drop to near-zero for a long confirmation window.
+MOVE_FLOW_START_PX    = 1.5    # flow > this (sustained) → enter MOVING
+MOVE_FLOW_STOP_PX     = 0.3    # flow < this (sustained) → exit MOVING
+BUFFER_START_FRAMES   = 5      # consecutive frames above START → flip to MOVING
+BUFFER_STOP_FRAMES    = 15     # consecutive frames below STOP → flip to STATIC
+MIN_MOVING_FRAMES     = 15     # require MOVING to last at least this many frames
+                               # before STOP is allowed (ignores brief dips at entry)
 
-MOVE_FLOW_THRESH_PX = 1.5     # median optical-flow magnitude (px) → moving
-MOVE_MIN_TRACK_PTS  = 8       # need at least this many tracked points to trust the signal
-MOVE_MIN_MASK_AREA  = 400     # below this the mask is too small to extract features
-STATE_BUFFER_FRAMES = 5       # need N consecutive agreeing flow signals to flip state
+MOVE_MIN_TRACK_PTS    = 8      # below this, flow signal considered unreliable
+MOVE_MIN_MASK_AREA    = 400    # below this, mask too small to extract features
 
-LOG_INTERVAL        = 5
+LOG_INTERVAL          = 5
 # ──────────────────────────────────────────────────────────────────────────────
 
 
@@ -70,30 +82,31 @@ def extract_edge_features(gray: np.ndarray, mask: np.ndarray,
     return pts
 
 
-def mask_is_moving(prev_gray: np.ndarray | None, gray: np.ndarray,
-                   prev_mask: np.ndarray | None, mask: np.ndarray) -> tuple[bool | None, float]:
-    """LK optical flow on previous-frame edge points. Returns (moving, median_px).
+def compute_mask_flow(prev_gray: np.ndarray | None, gray: np.ndarray,
+                      prev_mask: np.ndarray | None,
+                      mask: np.ndarray) -> float | None:
+    """LK optical flow on previous-frame edge points. Returns median flow (px).
 
-    moving == None means "signal unreliable" — caller should keep previous state.
+    Returns None if the signal is unreliable (mask too small, too few features,
+    or LK failed). Caller should treat None as "no evidence either way".
     """
     if prev_gray is None or prev_mask is None:
-        return None, 0.0
+        return None
     p0 = extract_edge_features(prev_gray, prev_mask)
     if p0 is None or len(p0) < MOVE_MIN_TRACK_PTS:
-        return None, 0.0
+        return None
     p1, status, _ = cv2.calcOpticalFlowPyrLK(
         prev_gray, gray, p0, None,
         winSize=(21, 21), maxLevel=3,
         criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 30, 0.01),
     )
     if p1 is None:
-        return None, 0.0
+        return None
     good = status.ravel() == 1
     if good.sum() < MOVE_MIN_TRACK_PTS:
-        return None, 0.0
+        return None
     disp = np.linalg.norm(p1[good] - p0[good], axis=2).ravel()
-    med = float(np.median(disp))
-    return med > MOVE_FLOW_THRESH_PX, med
+    return float(np.median(disp))
 
 
 def resolve_palm_idx(i: int, offset: int, stride: int, n_palm: int) -> int:
@@ -164,10 +177,11 @@ if __name__ == "__main__":
     anchor_palm_inv = None    # inv(T_cam_palm[anchor_frame])
 
     # State machine: STATIC ↔ MOVING, driven by optical flow with debounce buffer
-    state          = "STATIC"
-    buffer_count   = 0        # consecutive flow frames disagreeing with current state
-    prev_gray      = None
-    prev_mask      = None
+    state              = "STATIC"
+    buffer_count       = 0     # consecutive flow frames agreeing with transition
+    frames_in_state    = 0     # how long we've been in the current state
+    prev_gray          = None
+    prev_mask          = None
 
     depth_scale = 1.0
     pose        = None
@@ -199,27 +213,37 @@ if __name__ == "__main__":
             anchor_palm_inv = np.linalg.inv(T_cam_palm)
 
         else:
-            moving_now, flow_med = mask_is_moving(prev_gray, gray, prev_mask, mask)
+            flow_med = compute_mask_flow(prev_gray, gray, prev_mask, mask)
+            frames_in_state += 1
 
-            # Debounce buffer: only flip state after N consecutive agreeing frames.
-            # Unreliable signal (moving_now is None) resets the counter.
+            # Hysteresis: sensitive entry, strict exit. STOP is also gated by
+            # MIN_MOVING_FRAMES so a brief flow dip right after entering MOVING
+            # doesn't bounce us back to STATIC.
+            # Unreliable signal (None) is sticky — buffer neither advanced nor
+            # reset, so brief full-occlusion blackouts don't derail state.
             transitioned = False
-            if moving_now is None:
-                buffer_count = 0
-            else:
-                flow_says_moving = bool(moving_now)
-                currently_moving = (state == "MOVING")
-                if flow_says_moving != currently_moving:
+            if flow_med is not None:
+                if state == "STATIC":
+                    threshold_met = flow_med > MOVE_FLOW_START_PX
+                    buffer_target = BUFFER_START_FRAMES
+                    next_state    = "MOVING"
+                    stop_gate_ok  = True
+                else:  # MOVING
+                    threshold_met = flow_med < MOVE_FLOW_STOP_PX
+                    buffer_target = BUFFER_STOP_FRAMES
+                    next_state    = "STATIC"
+                    stop_gate_ok  = frames_in_state >= MIN_MOVING_FRAMES
+
+                if threshold_met and stop_gate_ok:
                     buffer_count += 1
-                    if buffer_count >= STATE_BUFFER_FRAMES:
-                        new_state = "MOVING" if flow_says_moving else "STATIC"
-                        if new_state == "MOVING":
-                            # STATIC → MOVING: anchor palm at this frame; the last
-                            # frozen pose is already in anchor_pose.
+                    if buffer_count >= buffer_target:
+                        if next_state == "MOVING":
+                            # STATIC → MOVING: anchor palm at this frame; the
+                            # last frozen pose is already in anchor_pose.
                             anchor_pose     = pose.copy()
                             anchor_palm_inv = np.linalg.inv(T_cam_palm)
                         else:
-                            # MOVING → STATIC: re-acquire via FP once, then freeze.
+                            # MOVING → STATIC: re-acquire via FP once, freeze.
                             d_scaled = depth * depth_scale
                             pose = est.track_one(
                                 rgb=color, depth=d_scaled, K=reader.K,
@@ -227,11 +251,14 @@ if __name__ == "__main__":
                             )
                             anchor_pose     = pose.copy()
                             anchor_palm_inv = np.linalg.inv(T_cam_palm)
-                        state = new_state
+                        state = next_state
                         buffer_count = 0
+                        frames_in_state = 0
                         transitioned = True
                 else:
+                    # evidence against transition — reset
                     buffer_count = 0
+            # else: signal unreliable → keep buffer_count as-is (sticky)
 
             # Per-frame pose update based on (possibly just-flipped) state.
             # If we just transitioned MOVING→STATIC we already ran FP above.
@@ -241,9 +268,9 @@ if __name__ == "__main__":
             # STATIC (no transition) or STATIC after transition: keep pose.
 
             if i % LOG_INTERVAL == 0:
+                flow_str = f"{flow_med:.2f}px" if flow_med is not None else "N/A"
                 logging.info(f"[frame {i}] state={state}  buf={buffer_count}  "
-                             f"flow_med={flow_med:.2f}px  "
-                             f"moving_sig={moving_now}")
+                             f"in_state={frames_in_state}  flow_med={flow_str}")
 
         prev_gray = gray
         prev_mask = mask
