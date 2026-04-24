@@ -68,15 +68,25 @@ LOG_INTERVAL          = 1      # log every frame to see flow values
 
 def extract_edge_features(gray: np.ndarray, mask: np.ndarray,
                           max_corners: int = 200) -> np.ndarray | None:
-    """goodFeaturesToTrack restricted to duck mask edge region."""
+    """goodFeaturesToTrack restricted to the duck mask interior.
+
+    Sampling inside the mask keeps features on duck texture. A thin boundary
+    band (previous approach) straddles the edge and leaks half the features
+    onto hand/background pixels — those stay static while the duck moves,
+    pulling median flow toward zero.
+    """
     if mask.sum() < MOVE_MIN_MASK_AREA:
         return None
-    # Focus on the mask boundary (and its neighborhood) where textured edges live.
-    edge = cv2.morphologyEx(mask.astype(np.uint8) * 255, cv2.MORPH_GRADIENT,
-                            cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5)))
+    # Erode 1 px to keep features off the anti-aliased outer ring of the mask.
+    interior = cv2.erode(
+        mask.astype(np.uint8) * 255,
+        cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3)),
+    )
+    if interior.sum() < MOVE_MIN_MASK_AREA:
+        interior = mask.astype(np.uint8) * 255
     pts = cv2.goodFeaturesToTrack(
         gray, maxCorners=max_corners, qualityLevel=0.01,
-        minDistance=4, mask=edge,
+        minDistance=4, mask=interior,
     )
     return pts
 
