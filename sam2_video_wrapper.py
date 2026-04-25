@@ -24,7 +24,10 @@ def generate_masks_sam2_video(
     mask_dir = mask_out_dir or os.path.join(scene_dir, "masks")
     os.makedirs(mask_dir, exist_ok=True)
 
+    # Frame 0 seed mask — fall back to scene_dir/masks/ if not in mask_out_dir
     frame0_mask_path = os.path.join(mask_dir, "000000.png")
+    if not os.path.exists(frame0_mask_path):
+        frame0_mask_path = os.path.join(scene_dir, "masks", "000000.png")
     assert os.path.exists(frame0_mask_path), f"Frame 0 mask not found: {frame0_mask_path}"
 
     frame0_mask = cv2.imread(frame0_mask_path, cv2.IMREAD_GRAYSCALE)
