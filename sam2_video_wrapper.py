@@ -11,15 +11,17 @@ def generate_masks_sam2_video(
     checkpoint_path,
     config="configs/sam2.1/sam2.1_hiera_s.yaml",
     device="cuda",
+    jpg_dir=None,
+    mask_out_dir=None,
 ):
     """
     Run SAM2VideoPredictor on all RGB frames in scene_dir/rgb/.
     Uses the existing frame-0 mask from scene_dir/masks/000000.png.
     Saves per-frame masks to scene_dir/masks/<frame_id>.png (overwrites frame 0 too).
     """
-    rgb_dir = os.path.join(scene_dir, "rgb")
-    jpg_dir = os.path.join(scene_dir, "rgb_jpg")
-    mask_dir = os.path.join(scene_dir, "masks")
+    rgb_dir  = os.path.join(scene_dir, "rgb")
+    jpg_dir  = jpg_dir or os.path.join(scene_dir, "rgb_jpg")
+    mask_dir = mask_out_dir or os.path.join(scene_dir, "masks")
     os.makedirs(mask_dir, exist_ok=True)
 
     frame0_mask_path = os.path.join(mask_dir, "000000.png")
@@ -64,9 +66,13 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--scene_dir", required=True)
     parser.add_argument("--checkpoint", default="/work/courses/3dv/team22/RGBTrack/segment-anything-2-real-time/sam2.1_hiera_small.pt")
+    parser.add_argument("--jpg_dir", default=None, help="Override jpg frames dir (default: scene_dir/rgb_jpg)")
+    parser.add_argument("--mask_out_dir", default=None, help="Override mask output dir (default: scene_dir/masks)")
     args = parser.parse_args()
 
     generate_masks_sam2_video(
         scene_dir=args.scene_dir,
         checkpoint_path=args.checkpoint,
+        jpg_dir=args.jpg_dir,
+        mask_out_dir=args.mask_out_dir,
     )
