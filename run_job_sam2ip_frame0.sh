@@ -32,17 +32,20 @@ pred  = SAM2ImagePredictor(model)
 # Use painted frame 0
 color = cv2.cvtColor(cv2.imread(f"{SCENE}/rgb_painted/000000.png"), cv2.COLOR_BGR2RGB)
 
-# Existing mask as logit prompt
+# Use centroid of existing mask as positive point prompt
 mask0 = cv2.imread(f"{SCENE}/masks/000000.png", cv2.IMREAD_GRAYSCALE)
-mask0 = (mask0 > 127).astype(np.float32)
-mask_256 = cv2.resize(mask0, (256, 256), interpolation=cv2.INTER_NEAREST)
-logits = (mask_256 - 0.5) * 20.0
+mask0 = (mask0 > 127)
+ys, xs = np.where(mask0)
+cx, cy = int(xs.mean()), int(ys.mean())
+point_coords = np.array([[cx, cy]])
+point_labels = np.array([1])  # positive
 
 with torch.inference_mode(), torch.autocast("cuda", dtype=torch.bfloat16):
     pred.set_image(color)
     masks, _, _ = pred.predict(
-        point_coords=None, point_labels=None,
-        mask_input=logits[None], multimask_output=False,
+        point_coords=point_coords,
+        point_labels=point_labels,
+        multimask_output=False,
     )
 
 out = (masks[0] > 0).astype(np.uint8) * 255
