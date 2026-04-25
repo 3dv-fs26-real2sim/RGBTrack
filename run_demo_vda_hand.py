@@ -74,6 +74,8 @@ if __name__ == "__main__":
                         help="Path to Metric3D checkpoint. If set, uses Metric3D instead of VDA depth PNGs.")
     parser.add_argument("--depth_pro_ckpt", type=str, default=None,
                         help="Path to Depth Pro checkpoint. If set, uses Depth Pro instead of VDA depth PNGs.")
+    parser.add_argument("--masks_dir", type=str, default=None,
+                        help="Override masks directory (default: test_scene_dir/masks/)")
     parser.add_argument("--depth_dir", type=str, default=None,
                         help="Override depth PNG directory (e.g. depth_pro/ for pre-generated maps). Defaults to test_scene_dir/depth/")
     parser.add_argument("--depth_dir_occ", type=str, default=None,
@@ -140,7 +142,8 @@ if __name__ == "__main__":
             depth     = load_depth_png(depth_dir_vis, reader.id_strs[i])
             depth_occ = load_depth_png(depth_dir_occ, reader.id_strs[i])
 
-        mask_path = os.path.join(args.test_scene_dir, "masks", f"{reader.id_strs[i]}.png")
+        masks_dir = args.masks_dir or os.path.join(args.test_scene_dir, "masks")
+        mask_path = os.path.join(masks_dir, f"{reader.id_strs[i]}.png")
         mask = cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE)
         mask = (mask > 127).astype(np.uint8)
 
