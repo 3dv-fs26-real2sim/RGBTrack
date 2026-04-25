@@ -42,13 +42,16 @@ LOG_INTERVAL        = 5
 # ──────────────────────────────────────────────────────────────────────────────
 
 
-def sam2_ip_rescue(ip_predictor, color_rgb, sam2vp_mask, cad_mask):
-    """SAM2ImagePredictor: union(SAM2VP, CAD) as logit prompt → refined mask."""
+def sam2_ip_rescue(ip_predictor, color_rgb, cad_mask):
+    """SAM2ImagePredictor: CAD silhouette ONLY as logit prompt → refined mask.
+
+    The SAM2VP mask is poisoned by the hand — discard it entirely.
+    CAD projection defines where the duck is; SAM2 refines to image edges.
+    """
     ip_predictor.set_image(color_rgb)
-    combined  = ((sam2vp_mask > 0) | (cad_mask > 0)).astype(np.uint8)
-    union_256 = cv2.resize(combined.astype(np.float32), (256, 256),
-                           interpolation=cv2.INTER_NEAREST)
-    logits = (union_256 - 0.5) * 20.0
+    cad_256 = cv2.resize((cad_mask > 0).astype(np.float32), (256, 256),
+                         interpolation=cv2.INTER_NEAREST)
+    logits = (cad_256 - 0.5) * 20.0
     masks, _, _ = ip_predictor.predict(
         point_coords=None, point_labels=None,
         mask_input=logits[None], multimask_output=False,
@@ -191,7 +194,8 @@ if __name__ == "__main__":
 
         else:
             d_scaled    = depth * depth_scale
-            T_raw       = est.track_one(rgb=color, depth=d_scaled, K=reader.K,
+            clean_depth = d_scaled * (mask > 0)  # blind FP to hand/background
+            T_raw       = est.track_one(rgb=color, depth=clean_depth, K=reader.K,
                                         iteration=args.track_refine_iter)
             area_ratio  = mask_area / max(last_good_area, 1)
             mask_broken = (i > WARMUP_FRAMES and
@@ -206,21 +210,21 @@ if __name__ == "__main__":
                 if cad_mask is None:
                     cad_mask = np.zeros((h_img, w_img), np.uint8)
 
-                # SAM2IP: perfect mask from union(current_mask, CAD)
+                # SAM2IP: CAD only — discard poisoned hand mask entirely
                 with torch.inference_mode(), \
                      torch.autocast("cuda", dtype=torch.bfloat16):
-                    perfect_mask = sam2_ip_rescue(ip_predictor, color,
-                                                  mask, cad_mask)
+                    perfect_mask = sam2_ip_rescue(ip_predictor, color, cad_mask)
 
-                # Reinitialize live SAM2 with perfect mask + replay context frames
-                # (exclude current frame — it was just initialized with perfect_mask)
+                # Reinitialize live SAM2 with perfect mask + memory warmup
                 context = frame_buffer[:-1]
                 live_sam2.initialize(color, perfect_mask,
                                      context_frames=context)
 
-                # FP re-run with perfect mask, seeded from last good pose
+                # FP re-run: seed from last good pose, depth masked to duck only
                 est.pose_last = torch.from_numpy(last_good_pose).float().cuda()
-                pose = est.track_one(rgb=color, depth=d_scaled, K=reader.K,
+                clean_depth_rescue = d_scaled * (perfect_mask > 0)
+                pose = est.track_one(rgb=color, depth=clean_depth_rescue,
+                                     K=reader.K,
                                      iteration=args.track_refine_iter)
                 last_good_pose = pose.copy()
                 last_good_area = float(perfect_mask.sum())
