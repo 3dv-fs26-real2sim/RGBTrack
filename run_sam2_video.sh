@@ -16,4 +16,6 @@ cd /work/courses/3dv/team22/RGBTrack
 
 /work/courses/3dv/team22/py310_env/bin/python sam2_video_wrapper.py \
     --scene_dir /work/courses/3dv/team22/foundationpose/data/20250804_104715 \
-    --checkpoint /work/courses/3dv/team22/RGBTrack/segment-anything-2-real-time/sam2.1_hiera_small.pt
+    --checkpoint /work/courses/3dv/team22/RGBTrack/segment-anything-2-real-time/sam2.1_hiera_small.pt \
+    --jpg_dir /work/courses/3dv/team22/foundationpose/data/20250804_104715/rgb_sb_jpg \
+    --mask_out_dir /work/courses/3dv/team22/foundationpose/data/20250804_104715/masks_sb
