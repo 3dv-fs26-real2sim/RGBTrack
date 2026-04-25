@@ -192,19 +192,10 @@ if __name__ == "__main__":
                 iteration=args.track_refine_iter,
             )
 
-            # ── ScoreNet quality gate (only when occluded — saves ~half the fps) ─
-            if occluded:
-                current_score = score_current_pose(est, color, d_scaled, reader.K)
-                score_thresh  = baseline_score * (1.0 - SCORE_DROP_MARGIN)
-                rot_accepted  = current_score >= score_thresh
-                if not rot_accepted:
-                    pose[:3, :3] = last_good_duck_rot
-                else:
-                    last_good_duck_rot = pose[:3, :3].copy()
-            else:
-                current_score = None
-                rot_accepted  = True
-                last_good_duck_rot = pose[:3, :3].copy()
+            # ScoreNet gate disabled — accept FP rotation every frame.
+            current_score = None
+            rot_accepted  = True
+            last_good_duck_rot = pose[:3, :3].copy()
 
             # ── Recovery re-init after occlusion ──────────────────────────────
             if occluded:
