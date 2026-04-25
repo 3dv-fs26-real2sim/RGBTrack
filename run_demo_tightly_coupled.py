@@ -1,18 +1,17 @@
 """
-FoundationPose duck tracker — Iterative Contour Strategy.
+FoundationPose duck tracker — Iterative Contour Strategy with SAM2 rescue.
 
-Per-frame:
-  1. Run FP track_one on the SAM2VP mask → T_raw (translation locked to mask contour).
-  2. Anomaly detection: mask area ratio outside [0.85, 1.15] of last_good_area.
-  3. On anomaly (hand grabs / hat dropout):
-       T_hybrid = (last_good_R, T_raw[:3,3])
-       — translation follows the duck's contour, rotation stays frozen.
-  4. Render expected silhouette at final pose → green overlay for mask_vis.
-     Red = SAM2VP mask. Green = CAD projection. Overlap shows what Stage 2
-     will use to prompt SAM2 into recovering the hat.
+Normal frames: use pre-generated SAM2VP mask → FP track_one.
+Anomaly frames (mask area outside [0.85, 1.15] of last_good):
+  1. Compute T_hybrid = (last_good_R, T_raw translation) — contour-locked.
+  2. Render full CAD silhouette at T_hybrid (includes hat).
+  3. Feed both the CAD silhouette AND the current SAM2VP mask as prompts
+     to SAM2ImagePredictor → refined mask (hat included, hand excluded
+     by image evidence, no hardcoding).
+  4. Re-run FP with refined mask → final pose.
+  5. Update last_good only on clean frames to prevent poisoning.
 
-Velocity buffer removed — it suffers from poisoning when the mask bleeds
-onto the hand before the threshold trips.
+mask_vis: red = SAM2VP mask, green = CAD projection at final pose.
 """
 import argparse
 import os
@@ -22,6 +21,10 @@ import cv2
 import imageio
 import numpy as np
 import trimesh
+import torch
+
+from sam2.build_sam import build_sam2
+from sam2.sam2_image_predictor import SAM2ImagePredictor
 
 from estimater import *
 from datareader import *
@@ -29,10 +32,42 @@ from tools import *
 
 
 # ── Settings ──────────────────────────────────────────────────────────────────
-AREA_RATIO_LO = 0.85    # mask shrinks below this → anomaly (hat dropout / occlusion)
-AREA_RATIO_HI = 1.15    # mask grows above this  → anomaly (hand bleed-in)
-LOG_INTERVAL  = 5
+AREA_RATIO_LO    = 0.85
+AREA_RATIO_HI    = 1.15
+SAM2_CHECKPOINT  = "/work/courses/3dv/team22/RGBTrack/segment-anything-2-real-time/sam2.1_hiera_small.pt"
+SAM2_CONFIG      = "configs/sam2.1/sam2.1_hiera_s.yaml"
+LOG_INTERVAL     = 5
 # ──────────────────────────────────────────────────────────────────────────────
+
+
+def build_sam2_image_predictor(checkpoint, config, device="cuda"):
+    model = build_sam2(config, checkpoint, device=device)
+    return SAM2ImagePredictor(model)
+
+
+def rescue_mask(sam2_predictor, color_rgb: np.ndarray,
+                sam2vp_mask: np.ndarray,
+                cad_mask: np.ndarray) -> np.ndarray:
+    """Re-segment current frame using SAM2VP mask + CAD silhouette as prompts.
+
+    Both masks are passed as positive mask prompts. SAM2 uses image features
+    to refine them — hat is recovered from the CAD silhouette, hand interior
+    is excluded because it looks different from the duck.
+    Returns binary mask (H, W) uint8.
+    """
+    sam2_predictor.set_image(color_rgb)
+
+    # Combine both masks as a single positive prompt mask.
+    # Union: SAM2VP has confirmed body pixels; CAD adds hat region.
+    combined = ((sam2vp_mask > 0) | (cad_mask > 0)).astype(np.uint8)
+
+    masks, _, _ = sam2_predictor.predict(
+        point_coords=None,
+        point_labels=None,
+        mask_input=combined[None].astype(np.float32),  # (1, H, W)
+        multimask_output=False,
+    )
+    return (masks[0] > 0).astype(np.uint8)
 
 
 if __name__ == "__main__":
@@ -45,6 +80,8 @@ if __name__ == "__main__":
     parser.add_argument("--debug", type=int, default=2)
     parser.add_argument("--debug_dir", type=str, default=f"{code_dir}/debug")
     parser.add_argument("--depth_dir", type=str, default=None)
+    parser.add_argument("--sam2_checkpoint", type=str, default=SAM2_CHECKPOINT)
+    parser.add_argument("--sam2_config", type=str, default=SAM2_CONFIG)
     args = parser.parse_args()
 
     set_logging_format()
@@ -68,6 +105,9 @@ if __name__ == "__main__":
     )
     logging.info("estimator initialized")
 
+    sam2_predictor = build_sam2_image_predictor(args.sam2_checkpoint, args.sam2_config)
+    logging.info("SAM2ImagePredictor initialized")
+
     reader    = YcbineoatReader(video_dir=args.test_scene_dir, shorter_side=None, zfar=np.inf)
     depth_dir = args.depth_dir or os.path.join(args.test_scene_dir, "depth")
 
@@ -86,24 +126,28 @@ if __name__ == "__main__":
         t1    = time.time()
 
         depth = load_depth_png(reader.id_strs[i])
-        mask_path = os.path.join(args.test_scene_dir, "masks", f"{reader.id_strs[i]}.png")
-        mask = (cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE) > 127).astype(np.uint8)
-        mask = cv2.morphologyEx(mask * 255, cv2.MORPH_CLOSE,
-                                cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (60, 60)),
-                                ).astype(bool).astype(np.uint8)
 
-        mask_area = float(mask.sum())
+        mask_path = os.path.join(args.test_scene_dir, "masks", f"{reader.id_strs[i]}.png")
+        sam2vp_mask = (cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE) > 127).astype(np.uint8)
+        sam2vp_mask = cv2.morphologyEx(
+            sam2vp_mask * 255, cv2.MORPH_CLOSE,
+            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (60, 60)),
+        ).astype(bool).astype(np.uint8)
+
+        mask_area = float(sam2vp_mask.sum())
+        h_img, w_img = color.shape[:2]
 
         if i == 0:
-            pose = binary_search_depth(est, mesh, color, mask.astype(bool), reader.K, debug=True)
-            obj_pixels  = mask > 0
+            pose = binary_search_depth(est, mesh, color, sam2vp_mask.astype(bool), reader.K, debug=True)
+            obj_pixels  = sam2vp_mask > 0
             bsd_z       = float(pose[2, 3])
             vda_z       = depth[obj_pixels].mean() if obj_pixels.any() else 1.0
             depth_scale = bsd_z / vda_z if vda_z > 0 else 1.0
             logging.info(f"Initial pose:\n{pose}\nDepth scale: {depth_scale:.3f}")
             last_good_area = mask_area
             last_good_R    = pose[:3, :3].copy()
-            tag = "INIT"
+            tag  = "INIT"
+            mask = sam2vp_mask
 
         else:
             d_scaled = depth * depth_scale
@@ -117,41 +161,60 @@ if __name__ == "__main__":
 
             if mask_broken:
                 n_anom += 1
+
+                # Hybrid pose: current translation + last good rotation
+                T_hybrid = np.eye(4)
+                T_hybrid[:3, :3] = last_good_R
+                T_hybrid[:3, 3]  = T_raw[:3, 3]
+
+                # Render full CAD silhouette at T_hybrid (includes hat)
+                cad_mask = render_cad_mask(T_hybrid, mesh, reader.K,
+                                           w=w_img, h=h_img)
+                if cad_mask is None:
+                    cad_mask = np.zeros((h_img, w_img), np.uint8)
+
+                # SAM2 rescue: refine using SAM2VP body + CAD hat region
+                with torch.inference_mode(), torch.autocast("cuda", dtype=torch.bfloat16):
+                    mask = rescue_mask(sam2_predictor, color, sam2vp_mask, cad_mask)
+
+                # Re-run FP with rescued mask
+                est.pose_last = torch.from_numpy(T_hybrid).float().cuda()
+                pose = est.track_one(
+                    rgb=color, depth=d_scaled, K=reader.K,
+                    iteration=args.track_refine_iter,
+                )
                 tag = f"ANOM({area_ratio:.2f}x)"
-                # Hybrid pose: contour-locked translation + frozen rotation
-                pose = np.eye(4)
-                pose[:3, :3] = last_good_R
-                pose[:3, 3]  = T_raw[:3, 3]
-                est.pose_last = torch.from_numpy(pose).float().cuda()
+                logging.info(f"[frame {i}] {tag}  n_anom={n_anom}")
+
             else:
-                tag = "OK"
-                pose           = T_raw.copy()
+                mask           = sam2vp_mask
+                pose           = T_raw
                 last_good_area = mask_area
                 last_good_R    = pose[:3, :3].copy()
-
-            if mask_broken or i % LOG_INTERVAL == 0:
-                logging.info(f"[frame {i}] {tag}  area_ratio={area_ratio:.2f}  n_anom={n_anom}")
+                tag = "OK"
 
         t2 = time.time()
         os.makedirs(f"{debug_dir}/ob_in_cam", exist_ok=True)
         np.savetxt(f"{debug_dir}/ob_in_cam/{reader.id_strs[i]}.txt", pose.reshape(4, 4))
 
+        if i % LOG_INTERVAL == 0:
+            logging.info(f"[frame {i}] {tag}  n_anom={n_anom}")
+
         if args.debug >= 1:
             center_pose = pose @ np.linalg.inv(to_origin)
             label_col   = (0, 0, 255) if "ANOM" in tag else (255, 0, 0)
-            color = cv2.putText(color, f"fps {int(1/(t2-t1))} {tag}",
-                                (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, label_col, 2)
-            vis = draw_posed_3d_box(reader.K, img=color, ob_in_cam=center_pose, bbox=bbox)
-            vis = draw_xyz_axis(color, ob_in_cam=center_pose, scale=0.1, K=reader.K,
+            color_hud = cv2.putText(color.copy(), f"fps {int(1/(t2-t1))} {tag}",
+                                    (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, label_col, 2)
+            vis = draw_posed_3d_box(reader.K, img=color_hud, ob_in_cam=center_pose, bbox=bbox)
+            vis = draw_xyz_axis(color_hud, ob_in_cam=center_pose, scale=0.1, K=reader.K,
                                 thickness=3, transparency=0, is_input_rgb=True)
 
         if args.debug >= 2:
             imageio.imwrite(f"{debug_dir}/track_vis/{reader.id_strs[i]}.png", vis)
 
-        # Mask vis: red = SAM2VP mask, green = CAD projection at final pose.
-        h_img, w_img = color.shape[:2]
+        # Mask vis: red = SAM2VP mask, green = CAD projection at final pose
         mv = (color * 0.6).astype(np.uint8)
-        mv = np.where(mask[..., None] > 0,
+        mv = np.where(sam2vp_mask[..., None] > 0,
                       (color * 0.5 + np.array([0, 0, 255], np.uint8) * 0.5
                        ).astype(np.uint8), mv)
         exp_mask = render_cad_mask(pose, mesh, reader.K, w=w_img, h=h_img)
