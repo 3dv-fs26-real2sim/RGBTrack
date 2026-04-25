@@ -126,8 +126,17 @@ if __name__ == "__main__":
             state = "FREE"
 
         elif in_grasp:
-            state = "GRASPED"
-            pose  = T_cam_palm @ anchor_palm_inv @ anchor_pose
+            state    = "GRASPED"
+            d_scaled = depth * depth_scale
+            fp_pose  = est.track_one(
+                rgb=color, depth=d_scaled, K=reader.K,
+                iteration=args.track_refine_iter,
+            )
+            # Translation from FP (depth-backed, reliable).
+            # Rotation from palm delta (FP rotation is noisy under occlusion).
+            palm_rot_delta = (T_cam_palm @ anchor_palm_inv)[:3, :3]
+            pose = fp_pose.copy()
+            pose[:3, :3] = palm_rot_delta @ anchor_pose[:3, :3]
             est.pose_last = torch.from_numpy(pose).float().cuda()
 
         else:
