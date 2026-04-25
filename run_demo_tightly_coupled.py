@@ -48,26 +48,23 @@ def build_sam2_image_predictor(checkpoint, config, device="cuda"):
 def rescue_mask(sam2_predictor, color_rgb: np.ndarray,
                 sam2vp_mask: np.ndarray,
                 cad_mask: np.ndarray) -> np.ndarray:
-    """Re-segment current frame using SAM2VP mask + CAD silhouette as prompts.
+    """Re-segment using SAM2VP body + CAD silhouette as logit prompt.
 
-    Both masks are passed as positive mask prompts. SAM2 uses image features
-    to refine them — hat is recovered from the CAD silhouette, hand interior
-    is excluded because it looks different from the duck.
+    Union of both masks converted to logits (0→-10, 1→+10) so SAM2
+    treats positives as high-confidence, not weak confidence.
     Returns binary mask (H, W) uint8.
     """
     sam2_predictor.set_image(color_rgb)
 
-    # Combine both masks as a single positive prompt mask.
-    # Union: SAM2VP has confirmed body pixels; CAD adds hat region.
     combined = ((sam2vp_mask > 0) | (cad_mask > 0)).astype(np.uint8)
-
-    # SAM2ImagePredictor expects mask_input at (1, 256, 256) low-res space.
-    mask_lowres = cv2.resize(combined.astype(np.float32), (256, 256),
-                             interpolation=cv2.INTER_LINEAR)
+    union_256 = cv2.resize(combined.astype(np.float32), (256, 256),
+                           interpolation=cv2.INTER_NEAREST)
+    # Convert binary to logits: 0 → -10.0, 1 → +10.0
+    logits = (union_256 - 0.5) * 20.0
     masks, _, _ = sam2_predictor.predict(
         point_coords=None,
         point_labels=None,
-        mask_input=mask_lowres[None],  # (1, 256, 256)
+        mask_input=logits[None],   # (1, 256, 256)
         multimask_output=False,
     )
     return (masks[0] > 0).astype(np.uint8)
@@ -118,11 +115,11 @@ if __name__ == "__main__":
         return cv2.imread(os.path.join(depth_dir, f"{id_str}.png"),
                           cv2.IMREAD_UNCHANGED).astype(np.float32) / 1000.0
 
-    depth_scale    = 1.0
-    pose           = None
-    last_good_area = None
-    last_good_R    = None
-    n_anom         = 0
+    depth_scale     = 1.0
+    pose            = None
+    last_good_pose  = None   # full 4x4 — used instead of T_raw on anomaly frames
+    last_good_area  = None
+    n_anom          = 0
 
     for i in range(len(reader.color_files)):
         color = reader.get_color(i)
@@ -134,7 +131,7 @@ if __name__ == "__main__":
         sam2vp_mask = (cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE) > 127).astype(np.uint8)
         sam2vp_mask = cv2.morphologyEx(
             sam2vp_mask * 255, cv2.MORPH_CLOSE,
-            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (60, 60)),
+            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 15)),
         ).astype(bool).astype(np.uint8)
 
         mask_area = float(sam2vp_mask.sum())
@@ -148,7 +145,7 @@ if __name__ == "__main__":
             depth_scale = bsd_z / vda_z if vda_z > 0 else 1.0
             logging.info(f"Initial pose:\n{pose}\nDepth scale: {depth_scale:.3f}")
             last_good_area = mask_area
-            last_good_R    = pose[:3, :3].copy()
+            last_good_pose = pose.copy()
             tag  = "INIT"
             mask = sam2vp_mask
 
@@ -165,10 +162,9 @@ if __name__ == "__main__":
             if mask_broken:
                 n_anom += 1
 
-                # Hybrid pose: current translation + last good rotation
-                T_hybrid = np.eye(4)
-                T_hybrid[:3, :3] = last_good_R
-                T_hybrid[:3, 3]  = T_raw[:3, 3]
+                # T_raw is poisoned (hand depth contaminates translation).
+                # Project CAD from the last known safe location instead.
+                T_hybrid = last_good_pose.copy()
 
                 # Render full CAD silhouette at T_hybrid (includes hat)
                 cad_mask = render_cad_mask(T_hybrid, mesh, reader.K,
@@ -180,12 +176,15 @@ if __name__ == "__main__":
                 with torch.inference_mode(), torch.autocast("cuda", dtype=torch.bfloat16):
                     mask = rescue_mask(sam2_predictor, color, sam2vp_mask, cad_mask)
 
-                # Re-run FP with rescued mask
+                # Re-run FP with rescued mask, seeded from last good pose
                 est.pose_last = torch.from_numpy(T_hybrid).float().cuda()
                 pose = est.track_one(
                     rgb=color, depth=d_scaled, K=reader.K,
                     iteration=args.track_refine_iter,
                 )
+                # Update last_good_pose with rescued result so rotation
+                # stays current across a long grasp (Gemini fix #2)
+                last_good_pose = pose.copy()
                 tag = f"ANOM({area_ratio:.2f}x)"
                 logging.info(f"[frame {i}] {tag}  n_anom={n_anom}")
 
@@ -193,7 +192,7 @@ if __name__ == "__main__":
                 mask           = sam2vp_mask
                 pose           = T_raw
                 last_good_area = mask_area
-                last_good_R    = pose[:3, :3].copy()
+                last_good_pose = pose.copy()
                 tag = "OK"
 
         t2 = time.time()
