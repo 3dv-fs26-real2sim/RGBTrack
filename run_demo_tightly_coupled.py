@@ -33,11 +33,13 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('--mesh_file', type=str, required=True)
     parser.add_argument('--test_scene_dir', type=str, required=True)
+    parser.add_argument('--debug_dir', type=str, required=True)
+    parser.add_argument('--est_refine_iter', type=int, default=2)
     parser.add_argument('--track_refine_iter', type=int, default=2)
     parser.add_argument('--debug', type=int, default=1)
     args = parser.parse_args()
 
-    debug_dir = f"{args.test_scene_dir}/debug/duck_tightly_coupled"
+    debug_dir = args.debug_dir
     os.makedirs(debug_dir, exist_ok=True)
     mask_vis_dir = f"{debug_dir}/mask_vis"
     os.makedirs(mask_vis_dir, exist_ok=True)
