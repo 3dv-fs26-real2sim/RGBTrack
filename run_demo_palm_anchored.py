@@ -117,6 +117,9 @@ if __name__ == "__main__":
         T_cam_palm = palm_poses[palm_idx]
 
         in_grasp = args.grasp_start_frame <= i <= args.grasp_end_frame
+        do_reinit = (args.reinit_interval > 0 and i > 0
+                     and i % args.reinit_interval == 0
+                     and mask.sum() > 0)
 
         if i == 0:
             pose = binary_search_depth(est, mesh, color, mask.astype(bool), reader.K, debug=True)
@@ -129,6 +132,17 @@ if __name__ == "__main__":
             anchor_pose     = pose.copy()
             anchor_palm_inv = np.linalg.inv(T_cam_palm)
             state = "FREE"
+
+        elif do_reinit:
+            state    = "REINIT"
+            d_scaled = depth * depth_scale
+            pose = est.register(
+                K=reader.K, rgb=color, depth=d_scaled,
+                ob_mask=mask.astype(bool), iteration=args.est_refine_iter,
+            )
+            anchor_pose     = pose.copy()
+            anchor_palm_inv = np.linalg.inv(T_cam_palm)
+            logging.info(f"[frame {i}] periodic re-register")
 
         elif in_grasp:
             state    = "GRASPED"
@@ -147,21 +161,10 @@ if __name__ == "__main__":
         else:
             state    = "FREE"
             d_scaled = depth * depth_scale
-            reinit = (args.reinit_interval > 0 and i > 0
-                      and i % args.reinit_interval == 0
-                      and mask.sum() > 0)
-            if reinit:
-                pose = est.register(
-                    K=reader.K, rgb=color, depth=d_scaled,
-                    ob_mask=mask.astype(bool), iteration=args.est_refine_iter,
-                )
-                logging.info(f"[frame {i}] periodic re-register")
-            else:
-                pose = est.track_one(
-                    rgb=color, depth=d_scaled, K=reader.K,
-                    iteration=args.track_refine_iter,
-                )
-            # Keep anchor fresh so grasp window starts from the most recent FP pose.
+            pose = est.track_one(
+                rgb=color, depth=d_scaled, K=reader.K,
+                iteration=args.track_refine_iter,
+            )
             anchor_pose     = pose.copy()
             anchor_palm_inv = np.linalg.inv(T_cam_palm)
 
