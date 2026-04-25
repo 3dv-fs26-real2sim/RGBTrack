@@ -116,8 +116,9 @@ if __name__ == "__main__":
     history          = deque(maxlen=HIST_LEN)
     depth_scale      = 1.0
     pose             = None
-    last_good_area   = None     # last mask area accepted as healthy
-    frozen_velocity  = None     # frozen during sustained anomalies (Gemini fix)
+    last_good_R      = None
+    last_good_area   = None
+    frozen_velocity  = None
     n_anom           = 0
 
     for i in range(len(reader.color_files)):
@@ -168,21 +169,19 @@ if __name__ == "__main__":
 
             if anomaly:
                 n_anom += 1
-                # Freeze velocity during anomaly so prediction doesn't drift
-                # (Gemini fix #2). Released when anomaly clears.
-                if frozen_velocity is None and v_used is not None:
-                    frozen_velocity = v_used.copy()
                 logging.info(f"[frame {i}] ANOMALY  Δt={tr_jump*100:.1f}cm  "
                              f"Δθ={rt_jump:.1f}°  area={mask_area/max(last_good_area,1):.2f}")
                 tag = "ANOM"
+                # Keep translation (trustworthy), freeze rotation to last clean value.
+                pose = T_raw.copy()
+                if last_good_R is not None:
+                    pose[:3, :3] = last_good_R
             else:
-                # Healthy frame: release frozen velocity, refresh mask baseline.
                 frozen_velocity = None
                 last_good_area  = mask_area
-                tag = "OK" if not kine_anom else "FAST"  # FAST = kine jump but no area drop
-
-            # Stage 1: accept FP raw pose regardless. Stage 2 will rescue here.
-            pose = T_raw
+                last_good_R     = T_raw[:3, :3].copy()
+                tag = "OK" if not kine_anom else "FAST"
+                pose = T_raw
 
         # Don't poison the velocity buffer with rescued/anomalous poses
         # (Gemini fix #2). Push to buffer only when state is healthy.
