@@ -51,10 +51,12 @@ def generate_masks_sam2_video(
         )
 
         # Propagate forward through all frames
+        from scipy.ndimage import binary_fill_holes
         for frame_idx, obj_ids, mask_logits in predictor.propagate_in_video(state):
-            mask = (mask_logits[0] > 0.0).cpu().numpy().astype(np.uint8) * 255
+            mask = (mask_logits[0] > 0.0).cpu().numpy()
             if mask.ndim == 3:
                 mask = mask[0]
+            mask = binary_fill_holes(mask).astype(np.uint8) * 255
             frame_files = sorted(glob.glob(os.path.join(rgb_dir, "*.png")))
             frame_name = os.path.splitext(os.path.basename(frame_files[frame_idx]))[0]
             cv2.imwrite(os.path.join(mask_dir, f"{frame_name}.png"), mask)

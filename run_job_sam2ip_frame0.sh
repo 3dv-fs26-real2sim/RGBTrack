@@ -75,10 +75,13 @@ print("BSD pose:", pose)
 from tools import render_cad_mask
 h, w = color_orig.shape[:2]
 final_mask = render_cad_mask(pose, mesh, reader.K, w=w, h=h)
+from scipy.ndimage import binary_fill_holes
 if final_mask is not None:
-    cv2.imwrite(f"{SCENE}/masks_painted/000000.png", (final_mask * 255).astype(np.uint8))
-    print("saved BSD mask, area:", final_mask.sum())
+    filled = binary_fill_holes(final_mask).astype(np.uint8) * 255
+    cv2.imwrite(f"{SCENE}/masks_painted/000000.png", filled)
+    print("saved BSD mask, area:", filled.sum() // 255)
 else:
-    cv2.imwrite(f"{SCENE}/masks_painted/000000.png", sam2_mask * 255)
-    print("BSD failed, saved SAM2IP mask")
+    filled = binary_fill_holes(sam2_mask).astype(np.uint8) * 255
+    cv2.imwrite(f"{SCENE}/masks_painted/000000.png", filled)
+    print("BSD failed, saved filled SAM2IP mask")
 EOF
