@@ -48,7 +48,37 @@ with torch.inference_mode(), torch.autocast("cuda", dtype=torch.bfloat16):
         multimask_output=False,
     )
 
-out = (masks[0] > 0).astype(np.uint8) * 255
-cv2.imwrite(f"{SCENE}/masks_painted/000000.png", out)
-print("saved mask, area:", out.sum() // 255)
+sam2_mask = (masks[0] > 0).astype(np.uint8)
+
+# Re-run BSD on original (unpainted) frame using SAM2IP mask
+import trimesh, sys
+sys.path.insert(0, '/work/courses/3dv/team22/RGBTrack')
+from estimater import *
+from datareader import *
+from tools import *
+
+set_seed(0)
+mesh = trimesh.load('/work/courses/3dv/team22/foundationpose/data/object/duck/duck.obj')
+mesh.apply_scale(0.001)
+scorer  = ScorePredictor()
+refiner = PoseRefinePredictor()
+glctx   = dr.RasterizeCudaContext()
+est = FoundationPose(model_pts=mesh.vertices, model_normals=mesh.vertex_normals,
+                     mesh=mesh, scorer=scorer, refiner=refiner,
+                     debug=0, debug_dir='/tmp', glctx=glctx)
+reader = YcbineoatReader(video_dir=SCENE, shorter_side=None, zfar=np.inf)
+
+# BSD on painted frame — better contrast helps depth search
+pose = binary_search_depth(est, mesh, color, sam2_mask.astype(bool), reader.K, debug=True)
+print("BSD pose:", pose)
+
+from tools import render_cad_mask
+h, w = color_orig.shape[:2]
+final_mask = render_cad_mask(pose, mesh, reader.K, w=w, h=h)
+if final_mask is not None:
+    cv2.imwrite(f"{SCENE}/masks_painted/000000.png", (final_mask * 255).astype(np.uint8))
+    print("saved BSD mask, area:", final_mask.sum())
+else:
+    cv2.imwrite(f"{SCENE}/masks_painted/000000.png", sam2_mask * 255)
+    print("BSD failed, saved SAM2IP mask")
 EOF
