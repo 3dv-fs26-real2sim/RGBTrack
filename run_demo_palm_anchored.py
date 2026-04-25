@@ -107,6 +107,9 @@ if __name__ == "__main__":
 
         mask_path = os.path.join(args.test_scene_dir, "masks", f"{reader.id_strs[i]}.png")
         mask = (cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE) > 127).astype(np.uint8)
+        mask = cv2.morphologyEx(mask * 255, cv2.MORPH_CLOSE,
+                                cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (60, 60)),
+                                ).astype(bool).astype(np.uint8)
 
         palm_idx   = resolve_palm_idx(i, args.palm_frame_offset, args.palm_frame_stride, n_palm)
         T_cam_palm = palm_poses[palm_idx]
