@@ -172,7 +172,8 @@ if __name__ == "__main__":
                 logging.info(f"[frame {i}] ANOMALY  Δt={tr_jump*100:.1f}cm  "
                              f"Δθ={rt_jump:.1f}°  area={mask_area/max(last_good_area,1):.2f}")
                 tag = "ANOM"
-                # Keep translation (trustworthy), freeze rotation to last clean value.
+                # Translation and mask are fine — only rotation is bad.
+                # Use T_raw translation + last accepted rotation.
                 pose = T_raw.copy()
                 if last_good_R is not None:
                     pose[:3, :3] = last_good_R
