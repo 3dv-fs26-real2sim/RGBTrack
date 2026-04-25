@@ -1,15 +1,13 @@
-"""SAM2VP with continuous CAD anchoring.
+"""SAM2VP with CAD-anchored point prompts on mask drop.
 
-For each frame, renders the CAD model at the known FP pose and injects it
-as an add_new_mask prompt before propagation. SAM2 snaps to real image
-edges while being continuously disciplined by the rigid duck shape.
-
-Usage:
-    python run_sam2_cad_anchored.py \
-        --scene_dir   <scene> \
-        --ob_in_cam   <debug>/ob_in_cam \
-        --mesh_file   <duck.obj> \
-        --anchor_every 1   # prompt every N frames (1 = every frame)
+Two-pass:
+  Pass 1: run SAM2VP normally with seed mask, record per-frame areas.
+  Pass 2: re-init SAM2VP. For each frame whose mask area dropped below
+          AREA_RATIO_LO * last_good_area (and continuing until area
+          recovers above AREA_RATIO_HI * last_good_area), inject a
+          positive POINT prompt at the centroid of the CAD silhouette
+          rendered from the known FP pose. SAM2 finds the whole duck
+          using the point as a "look here" suggestion.
 """
 import argparse
 import glob
@@ -35,8 +33,12 @@ if __name__ == "__main__":
     ap.add_argument("--mesh_file",    required=True)
     ap.add_argument("--mask_out_dir", default=None)
     ap.add_argument("--jpg_dir",      default=None)
-    ap.add_argument("--anchor_every", type=int, default=1,
-                    help="Inject CAD prompt every N frames (default 1 = every frame)")
+    ap.add_argument("--area_lo", type=float, default=0.85,
+                    help="Mask area drop ratio that triggers point prompt")
+    ap.add_argument("--area_hi", type=float, default=0.95,
+                    help="Mask area recovery ratio that stops point prompts")
+    ap.add_argument("--prompt_interval", type=int, default=30,
+                    help="While lost, attempt point prompt every N frames")
     ap.add_argument("--sam2_checkpoint", default=SAM2_CHECKPOINT)
     ap.add_argument("--sam2_config",     default=SAM2_CONFIG)
     args = ap.parse_args()
@@ -56,43 +58,77 @@ if __name__ == "__main__":
     mask0_path = os.path.join(args.scene_dir, "masks", "000000.png")
     mask0 = (cv2.imread(mask0_path, cv2.IMREAD_GRAYSCALE) > 127).astype(bool)
 
-    predictor = build_sam2_video_predictor(args.sam2_config, args.sam2_checkpoint,
-                                           device="cuda")
+    predictor   = build_sam2_video_predictor(args.sam2_config, args.sam2_checkpoint,
+                                             device="cuda")
+    frame_files = sorted(glob.glob(os.path.join(args.scene_dir, "rgb", "*.png")))
+    from scipy.ndimage import binary_fill_holes
 
+    # ── Pass 1: free SAM2VP run, record per-frame mask areas ─────────────────
+    print("Pass 1: free SAM2VP run to detect drops...")
+    areas = np.zeros(N, dtype=np.float64)
     with torch.inference_mode(), torch.autocast("cuda", dtype=torch.bfloat16):
-        state = predictor.init_state(
-            video_path=jpg_dir,
-            offload_video_to_cpu=True,
-            offload_state_to_cpu=True,
-        )
+        state = predictor.init_state(video_path=jpg_dir,
+                                     offload_video_to_cpu=True,
+                                     offload_state_to_cpu=True)
+        predictor.add_new_mask(state, frame_idx=0, obj_id=1, mask=mask0)
+        for fi, _, mlogits in predictor.propagate_in_video(state):
+            m = (mlogits[0] > 0.0).cpu().numpy()
+            if m.ndim == 3:
+                m = m[0]
+            areas[fi] = float(m.sum())
 
-        # Frame 0: seed with existing clean mask
+    # ── Identify frames needing CAD point prompt ─────────────────────────────
+    # While in a "lost" period (mask area dropped below area_lo * last_good),
+    # only attempt a prompt every prompt_interval frames. Stop on recovery.
+    last_good = areas[0]
+    frames_to_prompt = []
+    in_drop = False
+    drop_start = -1
+    for i in range(1, N):
+        if not in_drop and areas[i] < args.area_lo * last_good:
+            in_drop = True
+            drop_start = i
+        if in_drop:
+            if (i - drop_start) % args.prompt_interval == 0:
+                frames_to_prompt.append(i)
+            if areas[i] > args.area_hi * last_good:
+                in_drop = False
+        else:
+            last_good = max(last_good, areas[i])
+    print(f"Pass 2: prompting {len(frames_to_prompt)} frames with CAD centroid points")
+
+    # ── Pass 2: re-init SAM2VP with point prompts at drop frames ─────────────
+    with torch.inference_mode(), torch.autocast("cuda", dtype=torch.bfloat16):
+        state = predictor.init_state(video_path=jpg_dir,
+                                     offload_video_to_cpu=True,
+                                     offload_state_to_cpu=True)
         predictor.add_new_mask(state, frame_idx=0, obj_id=1, mask=mask0)
 
-        # Inject CAD masks at subsequent frames as anchors
-        for i in range(1, N):
-            if i % args.anchor_every != 0:
-                continue
+        for i in frames_to_prompt:
             pose_path = os.path.join(args.ob_in_cam, f"{reader.id_strs[i]}.txt")
             if not os.path.exists(pose_path):
                 continue
             pose     = np.loadtxt(pose_path).reshape(4, 4)
             cad_mask = render_cad_mask(pose, mesh, reader.K, w=w, h=h)
-            if cad_mask is not None and cad_mask.any():
-                predictor.add_new_mask(state, frame_idx=i, obj_id=1,
-                                       mask=cad_mask.astype(bool))
+            if cad_mask is None or not cad_mask.any():
+                continue
+            ys, xs = np.where(cad_mask > 0)
+            cy, cx = int(ys.mean()), int(xs.mean())
+            point_coords = np.array([[cx, cy]], dtype=np.float32)
+            point_labels = np.array([1], dtype=np.int32)
+            predictor.add_new_points_or_box(
+                state, frame_idx=i, obj_id=1,
+                points=point_coords, labels=point_labels,
+            )
 
-        # Propagate — SAM2 snaps each frame to CAD prior + image edges
-        from scipy.ndimage import binary_fill_holes
-        frame_files = sorted(glob.glob(os.path.join(args.scene_dir, "rgb", "*.png")))
-        for frame_idx, obj_ids, mask_logits in predictor.propagate_in_video(state):
-            mask = (mask_logits[0] > 0.0).cpu().numpy()
-            if mask.ndim == 3:
-                mask = mask[0]
-            mask = binary_fill_holes(mask).astype(np.uint8) * 255
-            frame_name = os.path.splitext(os.path.basename(frame_files[frame_idx]))[0]
-            cv2.imwrite(os.path.join(mask_dir, f"{frame_name}.png"), mask)
-            if frame_idx % 100 == 0:
-                print(f"frame {frame_idx}/{N}")
+        for fi, _, mlogits in predictor.propagate_in_video(state):
+            m = (mlogits[0] > 0.0).cpu().numpy()
+            if m.ndim == 3:
+                m = m[0]
+            m = binary_fill_holes(m).astype(np.uint8) * 255
+            name = os.path.splitext(os.path.basename(frame_files[fi]))[0]
+            cv2.imwrite(os.path.join(mask_dir, f"{name}.png"), m)
+            if fi % 100 == 0:
+                print(f"frame {fi}/{N}")
 
     print(f"Done → {mask_dir}")

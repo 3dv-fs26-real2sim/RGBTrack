@@ -22,4 +22,6 @@ mkdir -p logs
     --ob_in_cam   /work/courses/3dv/team22/foundationpose/debug/duck_vda_palm_rot/ob_in_cam \
     --mesh_file   /work/courses/3dv/team22/foundationpose/data/object/duck/duck.obj \
     --mask_out_dir /work/courses/3dv/team22/foundationpose/data/20250804_104715/masks_cad_anchored \
-    --anchor_every 15
+    --area_lo 0.85 \
+    --area_hi 0.95 \
+    --prompt_interval 30
