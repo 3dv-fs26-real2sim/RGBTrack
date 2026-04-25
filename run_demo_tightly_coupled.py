@@ -120,6 +120,10 @@ if __name__ == "__main__":
     last_good_area   = None
     frozen_velocity  = None
     n_anom           = 0
+    # BSD retry state
+    in_occlusion       = False   # True from first area drop until area recovers
+    frames_since_bsd   = 0
+    bsd_retries        = 0       # how many BSDs fired in current occlusion period
 
     for i in range(len(reader.color_files)):
         color = reader.get_color(i)
@@ -160,23 +164,47 @@ if __name__ == "__main__":
                 rt_jump = rotation_angle_deg(R_delta)
                 kine_anom = (tr_jump > TR_THRESH_M) or (rt_jump > ROT_THRESH_DEG)
 
-            # Gate kinematic anomaly with visual degradation (Gemini fix #3):
-            # only treat it as occlusion if mask area also dropped — otherwise
-            # it's likely genuine fast motion which we should accept.
+            anomaly   = kine_anom and (last_good_area is not None
+                                       and mask_area < AREA_DROP_RATIO * last_good_area)
             area_drop = (last_good_area is not None
                          and mask_area < AREA_DROP_RATIO * last_good_area)
-            anomaly = kine_anom and area_drop
 
-            if anomaly:
+            # ── BSD retry heuristic ───────────────────────────────────────────
+            do_bsd = False
+            if area_drop:
+                if not in_occlusion:
+                    # First frame of occlusion — fire BSD immediately
+                    in_occlusion     = True
+                    frames_since_bsd = 0
+                    bsd_retries      = 0
+                    do_bsd           = True
+                else:
+                    frames_since_bsd += 1
+                    retry_threshold = 20 if bsd_retries == 1 else 40
+                    if frames_since_bsd >= retry_threshold:
+                        do_bsd           = True
+                        frames_since_bsd = 0
+            else:
+                # Area recovered — reset occlusion state
+                in_occlusion     = False
+                frames_since_bsd = 0
+                bsd_retries      = 0
+            # ─────────────────────────────────────────────────────────────────
+
+            if do_bsd:
+                bsd_retries += 1
+                pose = binary_search_depth(est, mesh, color, mask.astype(bool),
+                                           reader.K, debug=False)
+                est.pose_last = torch.from_numpy(pose).float().cuda()
                 n_anom += 1
-                logging.info(f"[frame {i}] ANOMALY  Δt={tr_jump*100:.1f}cm  "
-                             f"Δθ={rt_jump:.1f}°  area={mask_area/max(last_good_area,1):.2f}")
-                tag = "ANOM"
-                # Translation and mask are fine — only rotation is bad.
-                # Use T_raw translation + last accepted rotation.
+                tag = f"BSD#{bsd_retries}"
+                logging.info(f"[frame {i}] {tag}  area={mask_area/max(last_good_area,1):.2f}")
+            elif anomaly:
+                # Kinematic anomaly but no BSD this frame — hold last good rotation
                 pose = T_raw.copy()
                 if last_good_R is not None:
                     pose[:3, :3] = last_good_R
+                tag = "ANOM"
             else:
                 frozen_velocity = None
                 last_good_area  = mask_area
