@@ -23,6 +23,8 @@ mkdir -p logs
     --test_scene_dir /work/courses/3dv/team22/foundationpose/data/20250804_104715 \
     --palm_poses_npz /work/courses/3dv/team22/RGBTrack/palm_poses_20250804_104715_right_from-palm_frame-aria_o0_3_0.npz \
     --debug_dir /work/courses/3dv/team22/foundationpose/debug/duck_palm_anchored \
+    --grasp_start_frame 250 \
+    --grasp_end_frame 450 \
     --est_refine_iter 2 \
     --track_refine_iter 2 \
     --debug 2
