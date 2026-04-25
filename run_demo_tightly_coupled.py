@@ -61,10 +61,13 @@ def rescue_mask(sam2_predictor, color_rgb: np.ndarray,
     # Union: SAM2VP has confirmed body pixels; CAD adds hat region.
     combined = ((sam2vp_mask > 0) | (cad_mask > 0)).astype(np.uint8)
 
+    # SAM2ImagePredictor expects mask_input at (1, 256, 256) low-res space.
+    mask_lowres = cv2.resize(combined.astype(np.float32), (256, 256),
+                             interpolation=cv2.INTER_LINEAR)
     masks, _, _ = sam2_predictor.predict(
         point_coords=None,
         point_labels=None,
-        mask_input=combined[None].astype(np.float32),  # (1, H, W)
+        mask_input=mask_lowres[None],  # (1, 256, 256)
         multimask_output=False,
     )
     return (masks[0] > 0).astype(np.uint8)
