@@ -26,7 +26,7 @@ def main():
                     help="Existing FP run dir containing ob_in_cam/*.txt")
     ap.add_argument("--out_debug_dir", required=True)
     ap.add_argument("--palm_poses_npz", required=True)
-    ap.add_argument("--grasp_start_frame", type=int, default=250)
+    ap.add_argument("--grasp_start_frame", type=int, default=220)
     ap.add_argument("--grasp_end_frame",   type=int, default=450)
     args = ap.parse_args()
 
@@ -42,12 +42,11 @@ def main():
     palm_poses = np.load(args.palm_poses_npz, allow_pickle=True)["poses"].astype(np.float64)
     n_palm     = palm_poses.shape[0]
 
-    # Anchor at frame just before grasp window starts.
-    anchor_idx = max(0, args.grasp_start_frame - 1)
-    anchor_pose = np.loadtxt(
-        os.path.join(args.fp_debug_dir, "ob_in_cam", f"{reader.id_strs[anchor_idx]}.txt")
+    # Anchor always at frame 0 — rotation is locked from the initial pose.
+    anchor_pose     = np.loadtxt(
+        os.path.join(args.fp_debug_dir, "ob_in_cam", f"{reader.id_strs[0]}.txt")
     ).reshape(4, 4)
-    anchor_palm_inv = np.linalg.inv(palm_poses[min(anchor_idx, n_palm - 1)])
+    anchor_palm_inv = np.linalg.inv(palm_poses[0])
 
     for i in range(len(reader.color_files)):
         id_str  = reader.id_strs[i]
