@@ -52,6 +52,8 @@ if __name__ == "__main__":
                         help="First frame of grasp window (~5s @ 50fps)")
     parser.add_argument("--grasp_end_frame", type=int, default=450,
                         help="Last frame of grasp window (~9s @ 50fps)")
+    parser.add_argument("--reinit_interval", type=int, default=100,
+                        help="Re-run est.register every N frames (0 = disabled)")
     parser.add_argument("--est_refine_iter", type=int, default=5)
     parser.add_argument("--track_refine_iter", type=int, default=1)
     parser.add_argument("--debug", type=int, default=1)
@@ -145,10 +147,20 @@ if __name__ == "__main__":
         else:
             state    = "FREE"
             d_scaled = depth * depth_scale
-            pose = est.track_one(
-                rgb=color, depth=d_scaled, K=reader.K,
-                iteration=args.track_refine_iter,
-            )
+            reinit = (args.reinit_interval > 0 and i > 0
+                      and i % args.reinit_interval == 0
+                      and mask.sum() > 0)
+            if reinit:
+                pose = est.register(
+                    K=reader.K, rgb=color, depth=d_scaled,
+                    ob_mask=mask.astype(bool), iteration=args.est_refine_iter,
+                )
+                logging.info(f"[frame {i}] periodic re-register")
+            else:
+                pose = est.track_one(
+                    rgb=color, depth=d_scaled, K=reader.K,
+                    iteration=args.track_refine_iter,
+                )
             # Keep anchor fresh so grasp window starts from the most recent FP pose.
             anchor_pose     = pose.copy()
             anchor_palm_inv = np.linalg.inv(T_cam_palm)
