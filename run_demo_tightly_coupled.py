@@ -1,34 +1,22 @@
 """
-FoundationPose duck tracker — Stage 1: anomaly detection (logging only).
+FoundationPose duck tracker — Iterative Contour Strategy.
 
 Per-frame:
-  1. Load pre-generated SAM2VP mask (live SAM2 swap is Stage 2).
-  2. Run FP track_one to get raw pose T_raw.
-  3. Predict T_pred from a 5-frame velocity buffer:
-        t_pred = t_{-1} + mean_translation_velocity      (or frozen v)
-        R_pred = R_{-1}
-  4. Kinematic anomaly check:
-        ‖t_raw - t_pred‖ > TR_THRESH_M
-        angle(R_raw, R_pred) > ROT_THRESH_DEG
-  5. Visual gate (Gemini fix): true anomaly only if kinematic jump AND
-     mask area dropped below AREA_DROP_RATIO × last_good. This prevents
-     misfiring on genuine rapid motion where SAM2 still sees the duck.
-  6. During anomaly:
-       - Freeze the velocity vector so the linear prediction does not drift.
-       - Skip pushing the rescued/anomalous pose to the velocity buffer.
-  7. Log anomalies but DO NOT rescue yet — accept T_raw regardless.
+  1. Run FP track_one on the SAM2VP mask → T_raw (translation locked to mask contour).
+  2. Anomaly detection: mask area ratio outside [0.85, 1.15] of last_good_area.
+  3. On anomaly (hand grabs / hat dropout):
+       T_hybrid = (last_good_R, T_raw[:3,3])
+       — translation follows the duck's contour, rotation stays frozen.
+  4. Render expected silhouette at final pose → green overlay for mask_vis.
+     Red = SAM2VP mask. Green = CAD projection. Overlap shows what Stage 2
+     will use to prompt SAM2 into recovering the hat.
 
-Stage 2 will replace step 7 with: render expected silhouette at T_pred
-via tools.render_cad_mask, erode/dilate to get safe prompt regions, sample
-+/- point prompts, reprompt live SAM2, re-run FP refiner.
-
-Anomaly thresholds set from palm rotation stats on frames 200-400:
-per-frame max ≈ 2.85°, p99 ≈ 1.51° → 5° is safely above genuine motion.
+Velocity buffer removed — it suffers from poisoning when the mask bleeds
+onto the hand before the threshold trips.
 """
 import argparse
 import os
 import time
-from collections import deque
 
 import cv2
 import imageio
@@ -40,37 +28,11 @@ from datareader import *
 from tools import *
 
 
-# ── Anomaly thresholds ────────────────────────────────────────────────────────
-TR_THRESH_M       = 0.05    # 5 cm/frame translation jump
-ROT_THRESH_DEG    = 5.0     # 5°/frame rotation jump
-AREA_DROP_RATIO   = 0.80    # mask area below 80% of last-good → visual degradation
-HIST_LEN          = 5       # frames in velocity buffer
-LOG_INTERVAL      = 5
+# ── Settings ──────────────────────────────────────────────────────────────────
+AREA_RATIO_LO = 0.85    # mask shrinks below this → anomaly (hat dropout / occlusion)
+AREA_RATIO_HI = 1.15    # mask grows above this  → anomaly (hand bleed-in)
+LOG_INTERVAL  = 5
 # ──────────────────────────────────────────────────────────────────────────────
-
-
-def rotation_angle_deg(R: np.ndarray) -> float:
-    c = (np.trace(R) - 1.0) / 2.0
-    return float(np.degrees(np.arccos(np.clip(c, -1.0, 1.0))))
-
-
-def predict_pose(history: deque,
-                 frozen_velocity: np.ndarray | None) -> tuple[np.ndarray | None, np.ndarray | None]:
-    """T_pred = (t_last + v, R_last). v is frozen velocity if provided,
-    otherwise mean translation delta of the buffer.
-    Returns (T_pred, v_used). None if history too short.
-    """
-    if len(history) < 2:
-        return None, None
-    poses = list(history)
-    if frozen_velocity is not None:
-        v = frozen_velocity
-    else:
-        deltas = [poses[i + 1][:3, 3] - poses[i][:3, 3] for i in range(len(poses) - 1)]
-        v = np.mean(np.stack(deltas, axis=0), axis=0)
-    T_pred = poses[-1].copy()
-    T_pred[:3, 3] = poses[-1][:3, 3] + v
-    return T_pred, v
 
 
 if __name__ == "__main__":
@@ -113,13 +75,11 @@ if __name__ == "__main__":
         return cv2.imread(os.path.join(depth_dir, f"{id_str}.png"),
                           cv2.IMREAD_UNCHANGED).astype(np.float32) / 1000.0
 
-    history          = deque(maxlen=HIST_LEN)
-    depth_scale      = 1.0
-    pose             = None
-    T_pred           = None
-    last_good_area   = None
-    frozen_velocity  = None
-    n_anom           = 0
+    depth_scale    = 1.0
+    pose           = None
+    last_good_area = None
+    last_good_R    = None
+    n_anom         = 0
 
     for i in range(len(reader.color_files)):
         color = reader.get_color(i)
@@ -142,56 +102,35 @@ if __name__ == "__main__":
             depth_scale = bsd_z / vda_z if vda_z > 0 else 1.0
             logging.info(f"Initial pose:\n{pose}\nDepth scale: {depth_scale:.3f}")
             last_good_area = mask_area
+            last_good_R    = pose[:3, :3].copy()
             tag = "INIT"
+
         else:
-            d_scaled        = depth * depth_scale
-            T_pred, v_used  = predict_pose(history, frozen_velocity)
+            d_scaled = depth * depth_scale
             T_raw = est.track_one(
                 rgb=color, depth=d_scaled, K=reader.K,
                 iteration=args.track_refine_iter,
             )
 
-            tr_jump = 0.0
-            rt_jump = 0.0
-            kine_anom = False
-            if T_pred is not None:
-                tr_jump = float(np.linalg.norm(T_raw[:3, 3] - T_pred[:3, 3]))
-                R_delta = T_raw[:3, :3] @ T_pred[:3, :3].T
-                rt_jump = rotation_angle_deg(R_delta)
-                kine_anom = (tr_jump > TR_THRESH_M) or (rt_jump > ROT_THRESH_DEG)
+            area_ratio  = mask_area / max(last_good_area, 1)
+            mask_broken = area_ratio < AREA_RATIO_LO or area_ratio > AREA_RATIO_HI
 
-            # Gate kinematic anomaly with visual degradation (Gemini fix #3):
-            # only treat it as occlusion if mask area also dropped — otherwise
-            # it's likely genuine fast motion which we should accept.
-            area_drop = (last_good_area is not None
-                         and mask_area < AREA_DROP_RATIO * last_good_area)
-            anomaly = kine_anom and area_drop
-
-            if anomaly:
+            if mask_broken:
                 n_anom += 1
-                # Freeze velocity during anomaly so prediction doesn't drift
-                # (Gemini fix #2). Released when anomaly clears.
-                if frozen_velocity is None and v_used is not None:
-                    frozen_velocity = v_used.copy()
-                logging.info(f"[frame {i}] ANOMALY  Δt={tr_jump*100:.1f}cm  "
-                             f"Δθ={rt_jump:.1f}°  area={mask_area/max(last_good_area,1):.2f}")
-                tag = "ANOM"
+                tag = f"ANOM({area_ratio:.2f}x)"
+                # Hybrid pose: contour-locked translation + frozen rotation
+                pose = np.eye(4)
+                pose[:3, :3] = last_good_R
+                pose[:3, 3]  = T_raw[:3, 3]
+                est.pose_last = torch.from_numpy(pose).float().cuda()
             else:
-                # Healthy frame: release frozen velocity, refresh mask baseline.
-                frozen_velocity = None
-                last_good_area  = mask_area
-                tag = "OK" if not kine_anom else "FAST"  # FAST = kine jump but no area drop
+                tag = "OK"
+                pose           = T_raw.copy()
+                last_good_area = mask_area
+                last_good_R    = pose[:3, :3].copy()
 
-            # Stage 1: accept FP raw pose regardless. Stage 2 will rescue here.
-            pose = T_raw
-
-        # Don't poison the velocity buffer with rescued/anomalous poses
-        # (Gemini fix #2). Push to buffer only when state is healthy.
-        if i == 0 or tag in ("OK", "FAST"):
-            history.append(pose.copy())
-
-        if i % LOG_INTERVAL == 0:
-            logging.info(f"[frame {i}] {tag}  anomalies_so_far={n_anom}")
+            if mask_broken or i % LOG_INTERVAL == 0:
+                logging.info(f"[frame {i}] {tag}  area_ratio={area_ratio:.2f}  n_anom={n_anom}")
 
         t2 = time.time()
         os.makedirs(f"{debug_dir}/ob_in_cam", exist_ok=True)
@@ -199,9 +138,9 @@ if __name__ == "__main__":
 
         if args.debug >= 1:
             center_pose = pose @ np.linalg.inv(to_origin)
-            color = cv2.putText(color, f"fps {int(1/(t2-t1))} {tag} a{n_anom}",
-                                (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8,
-                                (0, 0, 255) if tag == "ANOM" else (255, 0, 0), 2)
+            label_col   = (0, 0, 255) if "ANOM" in tag else (255, 0, 0)
+            color = cv2.putText(color, f"fps {int(1/(t2-t1))} {tag}",
+                                (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, label_col, 2)
             vis = draw_posed_3d_box(reader.K, img=color, ob_in_cam=center_pose, bbox=bbox)
             vis = draw_xyz_axis(color, ob_in_cam=center_pose, scale=0.1, K=reader.K,
                                 thickness=3, transparency=0, is_input_rgb=True)
@@ -209,24 +148,20 @@ if __name__ == "__main__":
         if args.debug >= 2:
             imageio.imwrite(f"{debug_dir}/track_vis/{reader.id_strs[i]}.png", vis)
 
-        # Mask vis: red = SAM2 raw mask, green = expected silhouette at T_pred.
+        # Mask vis: red = SAM2VP mask, green = CAD projection at final pose.
         h_img, w_img = color.shape[:2]
         mv = (color * 0.6).astype(np.uint8)
-        # red channel: SAM2 mask
-        red_layer = np.zeros_like(color)
-        red_layer[mask > 0] = [0, 0, 255]
         mv = np.where(mask[..., None] > 0,
-                      (color * 0.5 + red_layer * 0.5).astype(np.uint8), mv)
-        # green channel: expected silhouette at T_pred
-        if T_pred is not None:
-            exp_mask = render_cad_mask(T_pred, mesh, reader.K, w=w_img, h=h_img)
-            if exp_mask is not None and exp_mask.any():
-                mv = np.where(exp_mask[..., None] > 0,
-                              (mv * 0.5 + np.array([0, 255, 0], dtype=np.uint8) * 0.5
-                               ).astype(np.uint8), mv)
-        label_col = (0, 0, 255) if tag == "ANOM" else (200, 200, 200)
+                      (color * 0.5 + np.array([0, 0, 255], np.uint8) * 0.5
+                       ).astype(np.uint8), mv)
+        exp_mask = render_cad_mask(pose, mesh, reader.K, w=w_img, h=h_img)
+        if exp_mask is not None and exp_mask.any():
+            mv = np.where(exp_mask[..., None] > 0,
+                          (mv * 0.5 + np.array([0, 255, 0], np.uint8) * 0.5
+                           ).astype(np.uint8), mv)
+        label_col_mv = (0, 0, 255) if "ANOM" in tag else (200, 200, 200)
         mv = cv2.putText(mv, f"{i} {tag}", (10, 30),
-                         cv2.FONT_HERSHEY_SIMPLEX, 0.7, label_col, 2)
+                         cv2.FONT_HERSHEY_SIMPLEX, 0.7, label_col_mv, 2)
         imageio.imwrite(f"{debug_dir}/mask_vis/{reader.id_strs[i]}.png", mv[..., ::-1])
 
     logging.info(f"Total anomalies: {n_anom}/{len(reader.color_files)-1}")
