@@ -43,7 +43,10 @@ for i in range(len(boxes)):
 if len(boxes) == 0:
     print('No detection — try lowering box_thresh')
 else:
-    best = logits.argmax()
+    # Pick largest box (hand is bigger than duck and other false positives)
+    areas = boxes[:, 2] * boxes[:, 3]
+    best = int(areas.argmax())
+    print(f'Picked [{best}] (largest box)')
     cx,cy,bw,bh = boxes[best].tolist()
     x1,y1,x2,y2 = int((cx-bw/2)*w), int((cy-bh/2)*h), int((cx+bw/2)*w), int((cy+bh/2)*h)
     sam2 = build_sam2(SAM2_CFG, SAM2_CKPT, device='cuda')
