@@ -60,38 +60,43 @@ def warp_mask_by_flow(prev_mask, prev_frame, curr_frame, n_corners=200):
 
 
 # ── Blob rejection ────────────────────────────────────────────────────────────
-def reject_overgrowth(current_mask, predicted_mask, max_growth_px=40,
-                      min_blob_area=200):
-    """Replace new pixels that are either:
-      (a) isolated from the predicted mask border, OR
-      (b) connected but extend beyond max_growth_px from the predicted mask edge.
-    Both cases are replaced with predicted_mask pixels."""
+def reject_overgrowth(current_mask, predicted_mask, prev_mask,
+                      max_growth_px=15, min_blob_area=150,
+                      interior_erosion=5):
+    """If any large blob appears outside the growth zone:
+       → discard ALL new pixels for this frame, keep only predicted ∪ interior.
+       If no such blob: accept current_mask as-is.
+       Interior of prev_mask is always preserved.
+    """
+    # Safe interior — always kept regardless
+    k_int    = cv2.getStructuringElement(cv2.MORPH_ELLIPSE,
+                                          (interior_erosion * 2 + 1,) * 2)
+    interior = cv2.erode(prev_mask, k_int)
 
-    # Distance of every pixel from the nearest predicted_mask pixel
+    # Allowed growth zone
     dist_from_pred = cv2.distanceTransform(
         cv2.bitwise_not(predicted_mask), cv2.DIST_L2, 5)
-
-    # Allowed growth zone: within max_growth_px of predicted mask
     allowed = (dist_from_pred <= max_growth_px).astype(np.uint8) * 255
 
-    # New pixels in current mask
-    new_px = cv2.bitwise_and(current_mask, cv2.bitwise_not(predicted_mask))
-
-    # Flag new pixels that are outside the allowed growth zone
+    # New pixels outside allowed zone
+    new_px  = cv2.bitwise_and(current_mask, cv2.bitwise_not(predicted_mask))
     bad_new = cv2.bitwise_and(new_px, cv2.bitwise_not(allowed))
 
-    # Filter small noise
+    # Detect large blobs
     n_lab, labels, stats, _ = cv2.connectedComponentsWithStats(bad_new,
                                                                  connectivity=8)
-    blob_mask = np.zeros_like(current_mask)
-    for lbl in range(1, n_lab):
-        if stats[lbl, cv2.CC_STAT_AREA] >= min_blob_area:
-            blob_mask[labels == lbl] = 255
+    blob_found = any(stats[lbl, cv2.CC_STAT_AREA] >= min_blob_area
+                     for lbl in range(1, n_lab))
 
-    # Replace blob pixels with predicted_mask
-    refined = current_mask.copy()
-    refined[blob_mask > 0] = predicted_mask[blob_mask > 0]
-    return refined, blob_mask
+    if blob_found:
+        # Throw out ALL new additions — keep only predicted ∪ interior
+        refined   = cv2.bitwise_or(predicted_mask, interior)
+        blob_flag = True
+    else:
+        refined   = cv2.bitwise_or(current_mask, interior)
+        blob_flag = False
+
+    return refined, blob_flag
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
@@ -102,9 +107,9 @@ if __name__ == "__main__":
     ap.add_argument("--rgb_dir",   required=True,
                     help="RGB frames directory (for optical flow)")
     ap.add_argument("--out_dir",   required=True)
-    ap.add_argument("--border_dilation", type=int, default=20,
-                    help="Pixels around predicted mask that count as valid growth")
-    ap.add_argument("--min_blob_area",   type=int, default=200,
+    ap.add_argument("--border_dilation", type=int, default=15,
+                    help="Max pixels a mask edge can grow from predicted per frame")
+    ap.add_argument("--min_blob_area",   type=int, default=150,
                     help="Ignore new-pixel components smaller than this (noise)")
     args = ap.parse_args()
 
@@ -131,10 +136,10 @@ if __name__ == "__main__":
             continue
 
         predicted = warp_mask_by_flow(prev_mask, prev_rgb, rgb)
-        refined, blobs = reject_overgrowth(mask, predicted,
-                                           args.border_dilation,
-                                           args.min_blob_area)
-        n_blobs = int((blobs > 0).sum())
+        refined, blob_found = reject_overgrowth(mask, predicted, prev_mask,
+                                                args.border_dilation,
+                                                args.min_blob_area)
+        n_blobs = 1 if blob_found else 0
         total_blobs += n_blobs
 
         cv2.imwrite(os.path.join(args.out_dir, os.path.basename(mp)), refined)
