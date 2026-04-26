@@ -22,6 +22,10 @@ if __name__ == "__main__":
                     help="Multiply saturation in yellow range by this factor")
     ap.add_argument("--val_boost",    type=float, default=1.2,
                     help="Multiply value in yellow range by this factor")
+    ap.add_argument("--duck_mask_dir", default=None,
+                    help="If set, only boost yellow inside the duck bbox + bbox_pad")
+    ap.add_argument("--bbox_pad",     type=int,   default=30,
+                    help="Pixels of padding around the duck bbox")
     args = ap.parse_args()
 
     os.makedirs(args.out_dir, exist_ok=True)
@@ -31,11 +35,27 @@ if __name__ == "__main__":
     for i, p in enumerate(paths):
         img = cv2.imread(p)
         hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV).astype(np.float32)
+        h_img, w_img = img.shape[:2]
 
         # Soft yellow mask — gaussian-blurred for feathered edges
         yellow_hard = ((hsv[:, :, 0] >= args.hue_lo) &
                        (hsv[:, :, 0] <= args.hue_hi)).astype(np.float32)
         yellow = cv2.GaussianBlur(yellow_hard, (15, 15), 0)
+
+        # Restrict to duck bbox region if mask dir provided
+        if args.duck_mask_dir:
+            mp = os.path.join(args.duck_mask_dir, os.path.basename(p))
+            duck = cv2.imread(mp, cv2.IMREAD_GRAYSCALE)
+            if duck is not None and duck.any():
+                ys, xs = np.where(duck > 127)
+                x1 = max(0, xs.min() - args.bbox_pad)
+                y1 = max(0, ys.min() - args.bbox_pad)
+                x2 = min(w_img, xs.max() + args.bbox_pad)
+                y2 = min(h_img, ys.max() + args.bbox_pad)
+                bbox_mask = np.zeros_like(yellow)
+                bbox_mask[y1:y2, x1:x2] = 1.0
+                bbox_mask = cv2.GaussianBlur(bbox_mask, (31, 31), 0)
+                yellow = yellow * bbox_mask
 
         # Blend boosted vs original gradually
         s_boosted = np.clip(hsv[:, :, 1] * args.sat_boost, 0, 255)
