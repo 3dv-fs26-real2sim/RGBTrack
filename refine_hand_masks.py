@@ -63,25 +63,20 @@ def warp_mask_by_flow(prev_mask, prev_frame, curr_frame, n_corners=200):
 def reject_overgrowth(current_mask, predicted_mask, prev_mask,
                       max_growth_px=15, min_blob_area=150):
     """
-    Order:
-      1. Fill current mask (morphological close).
-      2. Union with prev_mask — pixels that existed before NEVER disappear.
-      3. Find blobs: new pixels outside growth zone with area >= min_blob_area.
-      4. Replace blob pixels with predicted (flow estimate) at those locations.
+      1. Union with prev_mask — pixels that existed before NEVER disappear.
+      2. Find blobs: new pixels outside growth zone with area >= min_blob_area.
+      3. Replace ONLY blob pixels with predicted values — leave everything else.
     """
-    # Step 1: fill small holes in current mask
-    k_fill  = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
-    filled  = cv2.morphologyEx(current_mask, cv2.MORPH_CLOSE, k_fill)
+    # Never lose previous pixels
+    base = cv2.bitwise_or(current_mask, prev_mask)
 
-    # Step 2: union with previous — nothing disappears
-    filled  = cv2.bitwise_or(filled, prev_mask)
-
-    # Step 3: allowed growth zone around predicted
+    # Allowed growth zone around predicted
     dist_from_pred = cv2.distanceTransform(
         cv2.bitwise_not(predicted_mask), cv2.DIST_L2, 5)
     allowed = (dist_from_pred <= max_growth_px).astype(np.uint8) * 255
 
-    new_px  = cv2.bitwise_and(filled, cv2.bitwise_not(predicted_mask))
+    # New pixels (relative to predicted) outside allowed zone
+    new_px  = cv2.bitwise_and(base, cv2.bitwise_not(predicted_mask))
     bad_new = cv2.bitwise_and(new_px, cv2.bitwise_not(allowed))
 
     n_lab, labels, stats, _ = cv2.connectedComponentsWithStats(bad_new,
@@ -91,8 +86,8 @@ def reject_overgrowth(current_mask, predicted_mask, prev_mask,
         if stats[lbl, cv2.CC_STAT_AREA] >= min_blob_area:
             blob_mask[labels == lbl] = 255
 
-    # Step 4: replace blob pixels with predicted values
-    refined = filled.copy()
+    # Replace only blob pixels with predicted
+    refined = base.copy()
     refined[blob_mask > 0] = predicted_mask[blob_mask > 0]
 
     return refined, bool(blob_mask.any())
