@@ -26,8 +26,8 @@ GDINO_CFG  = '/work/courses/3dv/team22/GroundingDINO/groundingdino/config/Ground
 GDINO_CKPT = '/work/courses/3dv/team22/foundationpose/weights/groundingdino_swint_ogc.pth'
 SAM2_CKPT  = '/work/courses/3dv/team22/RGBTrack/segment-anything-2-real-time/sam2.1_hiera_small.pt'
 SAM2_CFG   = 'configs/sam2.1/sam2.1_hiera_s.yaml'
-FRAME      = '/work/courses/3dv/team22/foundationpose/data/20250804_104715/rgb/000000.png'
-OUT        = '/work/courses/3dv/team22/foundationpose/data/20250804_104715/test_hand_mask.png'
+FRAME      = '/work/courses/3dv/team22/foundationpose/data/20250804_104715/rgb/000100.png'
+OUT        = '/work/courses/3dv/team22/foundationpose/data/20250804_104715/test_hand_mask_100.png'
 
 img_np, img_t = load_image(FRAME)
 h, w = img_np.shape[:2]
