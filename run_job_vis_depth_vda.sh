@@ -20,6 +20,7 @@ mkdir -p logs
     --source         vda \
     --test_scene_dir /work/courses/3dv/team22/foundationpose/data/20250804_104715 \
     --mesh_file      /work/courses/3dv/team22/foundationpose/data/object/duck/duck.obj \
+    --rgb_mask_dir   /work/courses/3dv/team22/foundationpose/data/20250804_104715/rgb_masked \
     --calibrate \
     --fps            50 \
-    --out_video      /work/courses/3dv/team22/foundationpose/debug/depth_vda.mp4
+    --out_video      /work/courses/3dv/team22/foundationpose/debug/depth_vda_nobg.mp4

@@ -145,6 +145,8 @@ def main():
                         help="Scale factor for depth maps (overrides auto-calibration)")
     parser.add_argument("--table_depth", type=float, default=None,
                         help="Hard cutoff in metres (after scaling): pixels at or beyond this are zeroed")
+    parser.add_argument("--rgb_mask_dir", type=str, default=None,
+                        help="If set, zero depth where these RGB frames are black (e.g. rgb_masked/)")
     parser.add_argument("--label", type=str, default=None,
                         help="Label shown in video (defaults to --source value)")
     parser.add_argument("--sim_depth", type=str, default=None,
@@ -239,6 +241,12 @@ def main():
         if depth is None:
             continue
         depth  = mask_background(depth * depth_scale, table_cutoff)
+        if args.rgb_mask_dir:
+            rgb_m_path = os.path.join(args.rgb_mask_dir, f"{reader.id_strs[i]}.png")
+            rgb_m = cv2.imread(rgb_m_path)
+            if rgb_m is not None:
+                black = (rgb_m.sum(axis=2) == 0)
+                depth[black] = 0.0
         label  = args.label.upper() if args.label else args.source.upper()
         frame  = make_frame(color, depth, vmin, vmax, label)
         out.write(cv2.cvtColor(frame, cv2.COLOR_RGB2BGR))
