@@ -13,6 +13,6 @@ mkdir -p logs
 python preprocess_depth_edges.py \
     --depth_dir /work/courses/3dv/team22/foundationpose/data/20250804_104715/depth \
     --out_dir   /work/courses/3dv/team22/foundationpose/data/20250804_104715/depth_edges \
-    --amplify   10.0 \
-    --blur      3 \
+    --amplify   100.0 \
+    --blur      0 \
     --ksize     3
