@@ -40,6 +40,8 @@ if __name__ == "__main__":
     ap.add_argument("--mask_dir",    required=True,
                     help="Duck mask directory")
     ap.add_argument("--out_video",   required=True)
+    ap.add_argument("--pose_dir",    required=True,
+                    help="ob_in_cam directory with per-frame pose .txt files")
     ap.add_argument("--table_depth", type=float, default=None)
     ap.add_argument("--amplify",     type=float, default=100.0)
     ap.add_argument("--fps",         type=int,   default=50)
@@ -75,10 +77,22 @@ if __name__ == "__main__":
     out    = cv2.VideoWriter(args.out_video, cv2.VideoWriter_fourcc(*"mp4v"),
                              args.fps, (w, h))
 
+    # Load pose txt files for depth-derived scale
+    pose_dir = args.pose_dir
+    def load_z(id_str):
+        p = os.path.join(pose_dir, f"{id_str}.png".replace(".png", ".txt"))
+        # id_str may already be stem
+        p2 = os.path.join(pose_dir, f"{id_str}.txt")
+        for path in [p, p2]:
+            if os.path.exists(path):
+                return float(np.loadtxt(path).reshape(4, 4)[2, 3])
+        return None
+
     prev_gray    = None
-    lower_pts    = None   # lower contour points tracked via LK
-    ref_contour  = None   # full reference contour from frame 0
-    ref_lower    = None   # lower reference points from frame 0
+    lower_pts    = None
+    ref_contour  = None
+    ref_lower    = None
+    ref_z        = None
 
     for i in range(N):
         rgb   = cv2.imread(rgb_paths[i])
@@ -92,20 +106,22 @@ if __name__ == "__main__":
             d_edges = np.zeros((h, w), np.uint8)
 
         # ── Duck silhouette via rigid fit on lower contour ───────────────
+        id_str = os.path.splitext(os.path.basename(rgb_paths[i]))[0]
+
         if i == 0:
             contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL,
                                             cv2.CHAIN_APPROX_NONE)
             if contours:
                 c = max(contours, key=cv2.contourArea)
                 step = max(1, len(c) // 500)
-                all_pts = c[::step, 0, :].astype(np.float32)
-                # Lower 40% of bounding box height
-                y_thresh    = all_pts[:, 1].min() + (all_pts[:, 1].max() -
-                               all_pts[:, 1].min()) * 0.6
+                all_pts  = c[::step, 0, :].astype(np.float32)
+                y_thresh = all_pts[:, 1].min() + (all_pts[:, 1].max() -
+                            all_pts[:, 1].min()) * 0.6
                 lower_idx   = all_pts[:, 1] >= y_thresh
                 ref_contour = all_pts
                 ref_lower   = all_pts[lower_idx]
                 lower_pts   = ref_lower.reshape(-1, 1, 2)
+                ref_z       = load_z(id_str)
 
         elif prev_gray is not None and lower_pts is not None:
             next_pts, status, _ = cv2.calcOpticalFlowPyrLK(
@@ -114,17 +130,26 @@ if __name__ == "__main__":
             if good.sum() >= 4:
                 lower_pts = next_pts[good].reshape(-1, 1, 2)
 
-        # Fit rigid transform from reference lower → current lower
+        # Fit rotation+translation only; scale locked to depth ratio
         duck_edges = np.zeros((h, w), np.uint8)
         if lower_pts is not None and ref_lower is not None and len(lower_pts) >= 4:
+            cur_z   = load_z(id_str)
+            scale   = (ref_z / cur_z) if (cur_z and ref_z and cur_z > 0.01) else 1.0
+            scale   = np.clip(scale, 0.7, 1.4)  # sanity clamp
+
             src = ref_lower[:len(lower_pts)].reshape(-1, 1, 2)
             dst = lower_pts.reshape(-1, 1, 2)
             M, _ = cv2.estimateAffinePartial2D(src, dst,
                                                 method=cv2.RANSAC,
                                                 ransacReprojThreshold=3)
             if M is not None:
-                # Apply transform to full reference contour
-                ones = np.ones((len(ref_contour), 1))
+                # Override scale in the affine matrix
+                angle  = np.arctan2(M[0, 1], M[0, 0])
+                cos_a, sin_a = np.cos(angle), np.sin(angle)
+                M[0, 0], M[0, 1] =  scale * cos_a, -scale * sin_a
+                M[1, 0], M[1, 1] =  scale * sin_a,  scale * cos_a
+
+                ones  = np.ones((len(ref_contour), 1))
                 pts_h = np.hstack([ref_contour, ones])
                 fitted = (M @ pts_h.T).T.astype(np.int32)
                 cv2.polylines(duck_edges, [fitted.reshape(-1, 1, 2)],
