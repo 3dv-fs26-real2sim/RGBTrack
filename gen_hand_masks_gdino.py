@@ -41,6 +41,8 @@ if __name__ == "__main__":
     ap.add_argument("--text_thresh",   type=float, default=0.25)
     ap.add_argument("--interval",      type=int, default=1,
                     help="Process every N frames (1=all frames)")
+    ap.add_argument("--rgb_dir",       default=None,
+                    help="Override RGB frames directory (default: scene_dir/rgb)")
     ap.add_argument("--sam2_checkpoint", default=SAM2_CHECKPOINT)
     ap.add_argument("--sam2_config",     default=SAM2_CONFIG)
     args = ap.parse_args()
@@ -48,7 +50,8 @@ if __name__ == "__main__":
     hand_dir = args.hand_mask_dir or os.path.join(args.scene_dir, "masks_hand")
     os.makedirs(hand_dir, exist_ok=True)
 
-    frame_files = sorted(glob.glob(os.path.join(args.scene_dir, "rgb", "*.png")))
+    rgb_dir     = args.rgb_dir or os.path.join(args.scene_dir, "rgb")
+    frame_files = sorted(glob.glob(os.path.join(rgb_dir, "*.png")))
     N = len(frame_files)
     print(f"Found {N} frames, processing every {args.interval}")
 

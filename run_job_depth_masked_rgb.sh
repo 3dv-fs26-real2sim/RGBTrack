@@ -18,4 +18,5 @@ mkdir -p logs
 /work/courses/3dv/team22/py310_env/bin/python make_depth_masked_rgb.py \
     --scene_dir  /work/courses/3dv/team22/foundationpose/data/20250804_104715 \
     --out_video  /work/courses/3dv/team22/foundationpose/debug/rgb_depth_masked.mp4 \
+    --out_png_dir /work/courses/3dv/team22/foundationpose/data/20250804_104715/rgb_masked \
     --fps        50

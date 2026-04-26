@@ -16,9 +16,10 @@ cd /work/courses/3dv/team22/RGBTrack
 mkdir -p logs
 
 python gen_hand_masks_gdino.py \
-    --scene_dir    /work/courses/3dv/team22/foundationpose/data/20250804_104715 \
-    --hand_mask_dir /work/courses/3dv/team22/foundationpose/data/20250804_104715/masks_hand \
-    --prompt       "white and black robotic hand" \
-    --box_thresh   0.25 \
-    --text_thresh  0.20 \
-    --interval     1
+    --scene_dir     /work/courses/3dv/team22/foundationpose/data/20250804_104715 \
+    --rgb_dir       /work/courses/3dv/team22/foundationpose/data/20250804_104715/rgb_masked \
+    --hand_mask_dir /work/courses/3dv/team22/foundationpose/data/20250804_104715/masks_hand_nobg \
+    --prompt        "white and black robotic hand" \
+    --box_thresh    0.25 \
+    --text_thresh   0.20 \
+    --interval      1

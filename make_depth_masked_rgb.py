@@ -15,8 +15,10 @@ if __name__ == "__main__":
     ap.add_argument("--scene_dir", required=True)
     ap.add_argument("--depth_dir", default=None,
                     help="Override depth dir (default: scene_dir/depth)")
-    ap.add_argument("--out_video", required=True)
-    ap.add_argument("--fps",       type=int, default=50)
+    ap.add_argument("--out_video",   default=None)
+    ap.add_argument("--out_png_dir", default=None,
+                    help="Save masked frames as PNGs here (for GSAM input)")
+    ap.add_argument("--fps",         type=int, default=50)
     ap.add_argument("--table_depth", type=float, default=None,
                     help="Cutoff in metres — pixels beyond this are masked out")
     ap.add_argument("--depth_scale", type=float, default=1.0)
@@ -49,26 +51,33 @@ if __name__ == "__main__":
         table_cutoff = args.table_depth
         print(f"Using table cutoff: {table_cutoff:.3f}m")
 
-    out = cv2.VideoWriter(args.out_video, cv2.VideoWriter_fourcc(*"mp4v"),
-                          args.fps, (w, h))
+    if args.out_png_dir:
+        os.makedirs(args.out_png_dir, exist_ok=True)
+    out = None
+    if args.out_video:
+        out = cv2.VideoWriter(args.out_video, cv2.VideoWriter_fourcc(*"mp4v"),
+                              args.fps, (w, h))
 
     for i in range(N):
         color = reader.get_color(i)
         p     = os.path.join(depth_dir, f"{reader.id_strs[i]}.png")
         d     = cv2.imread(p, cv2.IMREAD_UNCHANGED)
         if d is None:
-            out.write(cv2.cvtColor(color, cv2.COLOR_RGB2BGR))
-            continue
+            frame = cv2.cvtColor(color, cv2.COLOR_RGB2BGR)
+        else:
+            depth = d.astype(np.float32) / 1000.0 * args.depth_scale
+            mask  = ((depth > 0.01) & (depth <= table_cutoff)).astype(np.uint8)
+            frame = cv2.cvtColor(color, cv2.COLOR_RGB2BGR)
+            frame[mask == 0] = 0
 
-        depth = d.astype(np.float32) / 1000.0 * args.depth_scale
-        mask  = ((depth > 0.01) & (depth <= table_cutoff)).astype(np.uint8)
-
-        frame = cv2.cvtColor(color, cv2.COLOR_RGB2BGR)
-        frame[mask == 0] = 0
-
-        out.write(frame)
+        if out:
+            out.write(frame)
+        if args.out_png_dir:
+            cv2.imwrite(os.path.join(args.out_png_dir,
+                                     f"{reader.id_strs[i]}.png"), frame)
         if i % 100 == 0:
             print(f"  frame {i}/{N}")
 
-    out.release()
-    print(f"Done → {args.out_video}")
+    if out:
+        out.release()
+    print(f"Done")
