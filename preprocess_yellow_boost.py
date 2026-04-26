@@ -32,12 +32,16 @@ if __name__ == "__main__":
         img = cv2.imread(p)
         hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV).astype(np.float32)
 
-        # Yellow mask
-        yellow = (hsv[:, :, 0] >= args.hue_lo) & (hsv[:, :, 0] <= args.hue_hi)
+        # Soft yellow mask — gaussian-blurred for feathered edges
+        yellow_hard = ((hsv[:, :, 0] >= args.hue_lo) &
+                       (hsv[:, :, 0] <= args.hue_hi)).astype(np.float32)
+        yellow = cv2.GaussianBlur(yellow_hard, (15, 15), 0)
 
-        # Boost saturation and value in yellow region
-        hsv[:, :, 1][yellow] = np.clip(hsv[:, :, 1][yellow] * args.sat_boost, 0, 255)
-        hsv[:, :, 2][yellow] = np.clip(hsv[:, :, 2][yellow] * args.val_boost, 0, 255)
+        # Blend boosted vs original gradually
+        s_boosted = np.clip(hsv[:, :, 1] * args.sat_boost, 0, 255)
+        v_boosted = np.clip(hsv[:, :, 2] * args.val_boost, 0, 255)
+        hsv[:, :, 1] = hsv[:, :, 1] * (1 - yellow) + s_boosted * yellow
+        hsv[:, :, 2] = hsv[:, :, 2] * (1 - yellow) + v_boosted * yellow
 
         out = cv2.cvtColor(hsv.astype(np.uint8), cv2.COLOR_HSV2BGR)
         cv2.imwrite(os.path.join(args.out_dir, os.path.basename(p)), out)
