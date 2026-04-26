@@ -75,8 +75,10 @@ if __name__ == "__main__":
     out    = cv2.VideoWriter(args.out_video, cv2.VideoWriter_fourcc(*"mp4v"),
                              args.fps, (w, h))
 
-    prev_gray       = None
-    tracked_pts     = None   # duck contour points tracked via LK
+    prev_gray    = None
+    lower_pts    = None   # lower contour points tracked via LK
+    ref_contour  = None   # full reference contour from frame 0
+    ref_lower    = None   # lower reference points from frame 0
 
     for i in range(N):
         rgb   = cv2.imread(rgb_paths[i])
@@ -89,42 +91,46 @@ if __name__ == "__main__":
         if d_edges is None:
             d_edges = np.zeros((h, w), np.uint8)
 
-        # ── Duck contour: track via LK or re-sample from mask ────────────
-        if i == 0 or tracked_pts is None:
-            # Sample contour points from mask
+        # ── Duck silhouette via rigid fit on lower contour ───────────────
+        if i == 0:
             contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL,
                                             cv2.CHAIN_APPROX_NONE)
             if contours:
-                c    = max(contours, key=cv2.contourArea)
+                c = max(contours, key=cv2.contourArea)
                 step = max(1, len(c) // 500)
-                tracked_pts = c[::step, 0, :].astype(np.float32).reshape(-1, 1, 2)
-        elif prev_gray is not None and tracked_pts is not None:
+                all_pts = c[::step, 0, :].astype(np.float32)
+                # Lower 40% of bounding box height
+                y_thresh    = all_pts[:, 1].min() + (all_pts[:, 1].max() -
+                               all_pts[:, 1].min()) * 0.6
+                lower_idx   = all_pts[:, 1] >= y_thresh
+                ref_contour = all_pts
+                ref_lower   = all_pts[lower_idx]
+                lower_pts   = ref_lower.reshape(-1, 1, 2)
+
+        elif prev_gray is not None and lower_pts is not None:
             next_pts, status, _ = cv2.calcOpticalFlowPyrLK(
-                prev_gray, gray, tracked_pts, None)
+                prev_gray, gray, lower_pts, None)
             good = status.ravel() == 1
             if good.sum() >= 4:
-                pts_good      = tracked_pts[good].reshape(-1, 2)
-                next_good     = next_pts[good].reshape(-1, 2)
-                # Gate on lower 30% of contour points
-                y_thresh      = pts_good[:, 1].max() * 0.7
-                lower_mask    = pts_good[:, 1] >= y_thresh
-                if lower_mask.sum() > 0:
-                    lower_flow = np.linalg.norm(
-                        next_good[lower_mask] - pts_good[lower_mask], axis=1).mean()
-                else:
-                    lower_flow = 0.0
-                # Only update if lower part is actually moving
-                if lower_flow > 1.5:
-                    tracked_pts = next_good.reshape(-1, 1, 2)
+                lower_pts = next_pts[good].reshape(-1, 1, 2)
 
-        # Draw tracked duck contour as fine white lines
+        # Fit rigid transform from reference lower → current lower
         duck_edges = np.zeros((h, w), np.uint8)
-        if tracked_pts is not None and len(tracked_pts) >= 3:
-            pts_int = tracked_pts.reshape(-1, 2).astype(np.int32)
-            cv2.polylines(duck_edges, [pts_int], isClosed=True,
-                          color=255, thickness=1)
+        if lower_pts is not None and ref_lower is not None and len(lower_pts) >= 4:
+            src = ref_lower[:len(lower_pts)].reshape(-1, 1, 2)
+            dst = lower_pts.reshape(-1, 1, 2)
+            M, _ = cv2.estimateAffinePartial2D(src, dst,
+                                                method=cv2.RANSAC,
+                                                ransacReprojThreshold=3)
+            if M is not None:
+                # Apply transform to full reference contour
+                ones = np.ones((len(ref_contour), 1))
+                pts_h = np.hstack([ref_contour, ones])
+                fitted = (M @ pts_h.T).T.astype(np.int32)
+                cv2.polylines(duck_edges, [fitted.reshape(-1, 1, 2)],
+                              isClosed=True, color=255, thickness=1)
 
-        # ── Combine: depth edges + duck contour ──────────────────────────
+        # ── Combine ───────────────────────────────────────────────────────
         combined = np.maximum(d_edges, duck_edges)
         frame    = cv2.cvtColor(combined, cv2.COLOR_GRAY2BGR)
         out.write(frame)
