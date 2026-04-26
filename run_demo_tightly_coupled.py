@@ -84,6 +84,8 @@ if __name__ == "__main__":
     parser.add_argument("--debug_dir", type=str, default=f"{code_dir}/debug")
     parser.add_argument("--depth_dir", type=str, default=None)
     parser.add_argument("--masks_dir", type=str, default=None)
+    parser.add_argument("--rgb_dir",   type=str, default=None,
+                        help="Override RGB frames directory")
     args = parser.parse_args()
 
     set_logging_format()
@@ -127,7 +129,11 @@ if __name__ == "__main__":
     bsd_retries        = 0       # how many BSDs fired in current occlusion period
 
     for i in range(len(reader.color_files)):
-        color = reader.get_color(i)
+        if args.rgb_dir:
+            color = cv2.imread(os.path.join(args.rgb_dir, f"{reader.id_strs[i]}.png"))
+            color = cv2.cvtColor(color, cv2.COLOR_BGR2RGB)
+        else:
+            color = reader.get_color(i)
         t1    = time.time()
 
         depth = load_depth_png(reader.id_strs[i])

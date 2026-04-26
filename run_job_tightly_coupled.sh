@@ -19,10 +19,11 @@ cd /work/courses/3dv/team22/RGBTrack
 mkdir -p logs
 
 /work/courses/3dv/team22/py310_env/bin/python run_demo_tightly_coupled.py \
-    --mesh_file /work/courses/3dv/team22/foundationpose/data/object/duck/duck.obj \
+    --mesh_file      /work/courses/3dv/team22/foundationpose/data/object/duck/duck.obj \
     --test_scene_dir /work/courses/3dv/team22/foundationpose/data/20250804_104715 \
-    --masks_dir /work/courses/3dv/team22/foundationpose/data/20250804_104715/masks_cad_guided \
-    --debug_dir /work/courses/3dv/team22/foundationpose/debug/duck_tc_cad_guided \
+    --rgb_dir        /work/courses/3dv/team22/foundationpose/data/20250804_104715/rgb_masked \
+    --masks_dir      /work/courses/3dv/team22/foundationpose/data/20250804_104715/masks \
+    --debug_dir      /work/courses/3dv/team22/foundationpose/debug/duck_tc_nobg \
     --est_refine_iter 2 \
     --track_refine_iter 2 \
     --debug 2
