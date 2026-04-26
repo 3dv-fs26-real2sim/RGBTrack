@@ -11,8 +11,8 @@ cd /work/courses/3dv/team22/RGBTrack
 mkdir -p logs
 
 python refine_hand_masks.py \
-    --in_dir   /work/courses/3dv/team22/foundationpose/data/20250804_104715/masks_hand \
+    --mask_dir /work/courses/3dv/team22/foundationpose/data/20250804_104715/masks_hand \
+    --rgb_dir  /work/courses/3dv/team22/foundationpose/data/20250804_104715/rgb \
     --out_dir  /work/courses/3dv/team22/foundationpose/data/20250804_104715/masks_hand_refined \
-    --max_jump_px    80 \
-    --max_area_ratio 2.5 \
-    --velocity_alpha 0.6
+    --border_dilation 20 \
+    --min_blob_area   200
