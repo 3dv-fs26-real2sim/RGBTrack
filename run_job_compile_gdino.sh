@@ -12,4 +12,4 @@ export PATH=$CUDA_HOME/bin:$PATH
 export LD_LIBRARY_PATH=$CUDA_HOME/lib64:$LD_LIBRARY_PATH
 
 cd /work/courses/3dv/team22/GroundingDINO
-pip install -e . --no-deps
+pip install -e . --no-deps --no-build-isolation
