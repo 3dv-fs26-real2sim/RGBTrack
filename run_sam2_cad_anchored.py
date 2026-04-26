@@ -97,6 +97,11 @@ if __name__ == "__main__":
             last_good = max(last_good, areas[i])
     print(f"Pass 2: prompting {len(frames_to_prompt)} frames with CAD centroid points")
 
+    # Free Pass 1 state before allocating Pass 2 to avoid OOM on 15 GB GPU
+    predictor.reset_state(state)
+    del state
+    torch.cuda.empty_cache()
+
     # ── Pass 2: re-init SAM2VP with point prompts at drop frames ─────────────
     with torch.inference_mode(), torch.autocast("cuda", dtype=torch.bfloat16):
         state = predictor.init_state(video_path=jpg_dir,
