@@ -59,13 +59,24 @@ with torch.inference_mode(), torch.autocast("cuda", dtype=torch.bfloat16):
     state = predictor.init_state(video_path=JPG_DIR,
                                   offload_video_to_cpu=True,
                                   offload_state_to_cpu=True)
+    # Hand: positive point at arm location
     predictor.add_new_points_or_box(
         state, frame_idx=100, obj_id=1,
         points=np.array([[px, py]], dtype=np.float32),
         labels=np.array([1], dtype=np.int32),
     )
-    for fi, _, mlogits in predictor.propagate_in_video(state):
-        m = (mlogits[0] > 0.0).cpu().numpy()
+    # Duck: add as obj_id=2 so SAM2 enforces hard boundary (hand cannot bleed into duck)
+    duck_mask_path = f"{SCENE}/masks_cad_guided/000100.png"
+    duck_mask = cv2.imread(duck_mask_path, cv2.IMREAD_GRAYSCALE)
+    if duck_mask is not None:
+        duck_mask = (duck_mask > 127).astype(bool)
+        predictor.add_new_mask(state, frame_idx=100, obj_id=2, mask=duck_mask)
+        print("Duck boundary added as obj_id=2")
+
+    for fi, obj_ids, mlogits in predictor.propagate_in_video(state):
+        # obj_ids[0] = hand (obj_id=1), save only that
+        hand_idx = list(obj_ids).index(1) if 1 in obj_ids else 0
+        m = (mlogits[hand_idx] > 0.0).cpu().numpy()
         if m.ndim == 3: m = m[0]
         m = binary_fill_holes(m).astype(np.uint8) * 255
         name = os.path.splitext(os.path.basename(frame_files[fi]))[0]
