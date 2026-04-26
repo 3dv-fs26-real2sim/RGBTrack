@@ -39,8 +39,10 @@ if __name__ == "__main__":
     os.makedirs(args.out_dir, exist_ok=True)
     mask_paths = sorted(glob.glob(os.path.join(args.in_dir,  "*.png")))
     rgb_paths  = sorted(glob.glob(os.path.join(args.rgb_dir, "*.png")))
-    assert len(mask_paths) == len(rgb_paths), \
-        f"mask count {len(mask_paths)} != rgb count {len(rgb_paths)}"
+    # Match rgb to available masks only
+    mask_stems = {os.path.splitext(os.path.basename(p))[0] for p in mask_paths}
+    rgb_paths  = [p for p in rgb_paths
+                  if os.path.splitext(os.path.basename(p))[0] in mask_stems]
     N = len(mask_paths)
     print(f"Processing {N} frames  dilation={args.dilation}px  min_blob={args.min_blob_area}")
 
