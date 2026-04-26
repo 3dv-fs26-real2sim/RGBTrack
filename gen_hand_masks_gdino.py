@@ -86,8 +86,9 @@ if __name__ == "__main__":
                 print(f"  frame {i}/{N}: no detection")
             continue
 
-        # Take highest-confidence box
-        best = logits.argmax()
+        # Pick largest box (hand is bigger than duck and other false positives)
+        areas = boxes[:, 2] * boxes[:, 3]
+        best = int(areas.argmax())
         box_cx, box_cy, box_w, box_h = boxes[best].tolist()
         x1 = int((box_cx - box_w / 2) * w)
         y1 = int((box_cy - box_h / 2) * h)
