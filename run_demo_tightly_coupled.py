@@ -83,6 +83,7 @@ if __name__ == "__main__":
     parser.add_argument("--debug", type=int, default=2)
     parser.add_argument("--debug_dir", type=str, default=f"{code_dir}/debug")
     parser.add_argument("--depth_dir", type=str, default=None)
+    parser.add_argument("--masks_dir", type=str, default=None)
     args = parser.parse_args()
 
     set_logging_format()
@@ -130,7 +131,8 @@ if __name__ == "__main__":
         t1    = time.time()
 
         depth = load_depth_png(reader.id_strs[i])
-        mask_path = os.path.join(args.test_scene_dir, "masks", f"{reader.id_strs[i]}.png")
+        masks_dir = args.masks_dir or os.path.join(args.test_scene_dir, "masks")
+        mask_path = os.path.join(masks_dir, f"{reader.id_strs[i]}.png")
         mask = (cv2.imread(mask_path, cv2.IMREAD_GRAYSCALE) > 127).astype(np.uint8)
         mask = cv2.morphologyEx(mask * 255, cv2.MORPH_CLOSE,
                                 cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (60, 60)),
