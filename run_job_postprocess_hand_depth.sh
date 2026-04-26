@@ -16,4 +16,5 @@ python postprocess_hand_masks_depth.py \
     --depth_dir     /work/courses/3dv/team22/foundationpose/data/20250804_104715/depth \
     --out_dir       /work/courses/3dv/team22/foundationpose/data/20250804_104715/masks_hand_final \
     --duck_margin   0.05 \
-    --min_depth     0.2
+    --min_depth     0.2 \
+    --depth_scale   0.37
