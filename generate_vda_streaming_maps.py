@@ -30,6 +30,8 @@ def main():
     parser.add_argument("--ckpt_dir",  default=None,
                         help="Checkpoint dir (defaults to vda_repo/checkpoints)")
     parser.add_argument("--out_dir",   required=True)
+    parser.add_argument("--rgb_dir",   default=None,
+                        help="Override RGB frames dir (default: scene_dir/rgb)")
     parser.add_argument("--encoder",   default="vitl", choices=["vits", "vitb", "vitl"])
     parser.add_argument("--input_size",type=int, default=518)
     parser.add_argument("--fp32",      action="store_true")
@@ -59,7 +61,8 @@ def main():
     print(f"Loaded metric checkpoint: {ckpt_path}")
 
     # ── Process frames ─────────────────────────────────────────────────────────
-    color_files = sorted(glob.glob(os.path.join(args.scene_dir, "rgb", "*.png")))
+    rgb_dir = args.rgb_dir or os.path.join(args.scene_dir, "rgb")
+    color_files = sorted(glob.glob(os.path.join(rgb_dir, "*.png")))
     id_strs = [os.path.splitext(os.path.basename(f))[0] for f in color_files]
     print(f"Processing {len(color_files)} frames → {args.out_dir}")
 

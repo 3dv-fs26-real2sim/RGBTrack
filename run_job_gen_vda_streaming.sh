@@ -21,4 +21,5 @@ mkdir -p logs
 /work/courses/3dv/team22/py310_env/bin/python generate_vda_streaming_maps.py \
     --scene_dir /work/courses/3dv/team22/foundationpose/data/20250804_104715 \
     --vda_repo  /work/courses/3dv/team22/Video-Depth-Anything-Internal \
-    --out_dir   /work/courses/3dv/team22/foundationpose/data/20250804_104715/depth_vda_streaming
+    --rgb_dir   /work/courses/3dv/team22/foundationpose/data/20250804_104715/rgb_masked \
+    --out_dir   /work/courses/3dv/team22/foundationpose/data/20250804_104715/depth_vda_nobg
