@@ -60,32 +60,35 @@ def warp_mask_by_flow(prev_mask, prev_frame, curr_frame, n_corners=200):
 
 
 # ── Blob rejection ────────────────────────────────────────────────────────────
-def reject_isolated_blobs(current_mask, predicted_mask, border_dilation=20,
-                           min_blob_area=200):
-    """Replace blobs in current_mask that are disconnected from predicted_mask
-    with the predicted_mask values."""
-    # Dilated border of predicted mask = "allowed growth zone"
-    kernel   = cv2.getStructuringElement(cv2.MORPH_ELLIPSE,
-                                          (border_dilation * 2 + 1,) * 2)
-    allowed  = cv2.dilate(predicted_mask, kernel)
+def reject_overgrowth(current_mask, predicted_mask, max_growth_px=40,
+                      min_blob_area=200):
+    """Replace new pixels that are either:
+      (a) isolated from the predicted mask border, OR
+      (b) connected but extend beyond max_growth_px from the predicted mask edge.
+    Both cases are replaced with predicted_mask pixels."""
 
-    # New pixels
+    # Distance of every pixel from the nearest predicted_mask pixel
+    dist_from_pred = cv2.distanceTransform(
+        cv2.bitwise_not(predicted_mask), cv2.DIST_L2, 5)
+
+    # Allowed growth zone: within max_growth_px of predicted mask
+    allowed = (dist_from_pred <= max_growth_px).astype(np.uint8) * 255
+
+    # New pixels in current mask
     new_px = cv2.bitwise_and(current_mask, cv2.bitwise_not(predicted_mask))
 
-    # Connected components of new pixels
-    n_lab, labels, stats, _ = cv2.connectedComponentsWithStats(new_px,
+    # Flag new pixels that are outside the allowed growth zone
+    bad_new = cv2.bitwise_and(new_px, cv2.bitwise_not(allowed))
+
+    # Filter small noise
+    n_lab, labels, stats, _ = cv2.connectedComponentsWithStats(bad_new,
                                                                  connectivity=8)
     blob_mask = np.zeros_like(current_mask)
     for lbl in range(1, n_lab):
-        area = stats[lbl, cv2.CC_STAT_AREA]
-        if area < min_blob_area:
-            continue
-        component = (labels == lbl).astype(np.uint8)
-        # If this component doesn't overlap the allowed growth zone → blob
-        if not cv2.bitwise_and(component, allowed // 255).any():
-            blob_mask = cv2.bitwise_or(blob_mask, component.astype(np.uint8) * 255)
+        if stats[lbl, cv2.CC_STAT_AREA] >= min_blob_area:
+            blob_mask[labels == lbl] = 255
 
-    # Replace blob pixels: use predicted_mask there instead
+    # Replace blob pixels with predicted_mask
     refined = current_mask.copy()
     refined[blob_mask > 0] = predicted_mask[blob_mask > 0]
     return refined, blob_mask
@@ -128,9 +131,9 @@ if __name__ == "__main__":
             continue
 
         predicted = warp_mask_by_flow(prev_mask, prev_rgb, rgb)
-        refined, blobs = reject_isolated_blobs(mask, predicted,
-                                               args.border_dilation,
-                                               args.min_blob_area)
+        refined, blobs = reject_overgrowth(mask, predicted,
+                                           args.border_dilation,
+                                           args.min_blob_area)
         n_blobs = int((blobs > 0).sum())
         total_blobs += n_blobs
 
