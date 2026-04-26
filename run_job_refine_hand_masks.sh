@@ -14,5 +14,5 @@ python refine_hand_masks.py \
     --mask_dir /work/courses/3dv/team22/foundationpose/data/20250804_104715/masks_hand \
     --rgb_dir  /work/courses/3dv/team22/foundationpose/data/20250804_104715/rgb \
     --out_dir  /work/courses/3dv/team22/foundationpose/data/20250804_104715/masks_hand_refined \
-    --border_dilation 15 \
+    --dilation        2 \
     --min_blob_area   150
