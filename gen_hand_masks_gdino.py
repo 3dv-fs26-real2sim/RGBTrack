@@ -13,7 +13,7 @@ import cv2
 import numpy as np
 import torch
 
-GDINO_REPO = "/work/courses/3dv/team22/FoundationPose-plus-plus/sam-hq/seginw/GroundingDINO"
+GDINO_REPO = "/work/courses/3dv/team22/GroundingDINO"
 GDINO_CFG  = f"{GDINO_REPO}/groundingdino/config/GroundingDINO_SwinT_OGC.py"
 GDINO_CKPT = "/work/courses/3dv/team22/foundationpose/weights/groundingdino_swint_ogc.pth"
 SAM2_CHECKPOINT = "/work/courses/3dv/team22/RGBTrack/segment-anything-2-real-time/sam2.1_hiera_small.pt"

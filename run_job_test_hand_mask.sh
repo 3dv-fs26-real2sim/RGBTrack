@@ -17,14 +17,14 @@ cd /work/courses/3dv/team22/RGBTrack
 
 /work/courses/3dv/team22/py310_env/bin/python - <<'EOF'
 import sys, os, cv2, numpy as np, torch
-sys.path.insert(0, '/work/courses/3dv/team22/FoundationPose-plus-plus/sam-hq/seginw/GroundingDINO')
+sys.path.insert(0, '/work/courses/3dv/team22/GroundingDINO')
 from groundingdino.util.inference import load_model, predict
 from sam2.build_sam import build_sam2
 from sam2.sam2_image_predictor import SAM2ImagePredictor
 from groundingdino.util.inference import load_image
 from PIL import Image
 
-GDINO_CFG  = '/work/courses/3dv/team22/FoundationPose-plus-plus/sam-hq/seginw/GroundingDINO/groundingdino/config/GroundingDINO_SwinT_OGC.py'
+GDINO_CFG  = '/work/courses/3dv/team22/GroundingDINO/groundingdino/config/GroundingDINO_SwinT_OGC.py'
 GDINO_CKPT = '/work/courses/3dv/team22/foundationpose/weights/groundingdino_swint_ogc.pth'
 SAM2_CKPT  = '/work/courses/3dv/team22/RGBTrack/segment-anything-2-real-time/sam2.1_hiera_small.pt'
 SAM2_CFG   = 'configs/sam2.1/sam2.1_hiera_s.yaml'
