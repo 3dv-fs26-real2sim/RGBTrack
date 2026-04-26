@@ -61,42 +61,41 @@ def warp_mask_by_flow(prev_mask, prev_frame, curr_frame, n_corners=200):
 
 # ── Blob rejection ────────────────────────────────────────────────────────────
 def reject_overgrowth(current_mask, predicted_mask, prev_mask,
-                      max_growth_px=15, min_blob_area=150,
-                      interior_erosion=5):
-    """If any large blob appears outside the growth zone:
-       → discard ALL new pixels for this frame, keep only predicted ∪ interior.
-       If no such blob: accept current_mask as-is.
-       Interior of prev_mask is always preserved.
+                      max_growth_px=15, min_blob_area=150):
     """
-    # Safe interior — always kept regardless
-    k_int    = cv2.getStructuringElement(cv2.MORPH_ELLIPSE,
-                                          (interior_erosion * 2 + 1,) * 2)
-    interior = cv2.erode(prev_mask, k_int)
+    Order:
+      1. Fill current mask (morphological close).
+      2. Union with prev_mask — pixels that existed before NEVER disappear.
+      3. Find blobs: new pixels outside growth zone with area >= min_blob_area.
+      4. Replace blob pixels with predicted (flow estimate) at those locations.
+    """
+    # Step 1: fill small holes in current mask
+    k_fill  = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
+    filled  = cv2.morphologyEx(current_mask, cv2.MORPH_CLOSE, k_fill)
 
-    # Allowed growth zone
+    # Step 2: union with previous — nothing disappears
+    filled  = cv2.bitwise_or(filled, prev_mask)
+
+    # Step 3: allowed growth zone around predicted
     dist_from_pred = cv2.distanceTransform(
         cv2.bitwise_not(predicted_mask), cv2.DIST_L2, 5)
     allowed = (dist_from_pred <= max_growth_px).astype(np.uint8) * 255
 
-    # New pixels outside allowed zone
-    new_px  = cv2.bitwise_and(current_mask, cv2.bitwise_not(predicted_mask))
+    new_px  = cv2.bitwise_and(filled, cv2.bitwise_not(predicted_mask))
     bad_new = cv2.bitwise_and(new_px, cv2.bitwise_not(allowed))
 
-    # Detect large blobs
     n_lab, labels, stats, _ = cv2.connectedComponentsWithStats(bad_new,
                                                                  connectivity=8)
-    blob_found = any(stats[lbl, cv2.CC_STAT_AREA] >= min_blob_area
-                     for lbl in range(1, n_lab))
+    blob_mask = np.zeros_like(current_mask)
+    for lbl in range(1, n_lab):
+        if stats[lbl, cv2.CC_STAT_AREA] >= min_blob_area:
+            blob_mask[labels == lbl] = 255
 
-    if blob_found:
-        # Throw out ALL new additions — keep only predicted ∪ interior
-        refined   = cv2.bitwise_or(predicted_mask, interior)
-        blob_flag = True
-    else:
-        refined   = cv2.bitwise_or(current_mask, interior)
-        blob_flag = False
+    # Step 4: replace blob pixels with predicted values
+    refined = filled.copy()
+    refined[blob_mask > 0] = predicted_mask[blob_mask > 0]
 
-    return refined, blob_flag
+    return refined, bool(blob_mask.any())
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
