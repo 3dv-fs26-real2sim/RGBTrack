@@ -28,16 +28,8 @@ from sam2.sam2_image_predictor import SAM2ImagePredictor
 
 
 def load_image_gdino(path):
-    import torchvision.transforms as T
-    from PIL import Image
-    transform = T.Compose([
-        T.RandomResize([800], max_size=1333),
-        T.ToTensor(),
-        T.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]),
-    ])
-    img_pil = Image.open(path).convert("RGB")
-    img_t, _ = transform(img_pil, None)
-    return np.array(img_pil), img_t
+    from groundingdino.util.inference import load_image
+    return load_image(path)
 
 
 if __name__ == "__main__":

@@ -21,7 +21,7 @@ sys.path.insert(0, '/work/courses/3dv/team22/FoundationPose-plus-plus/sam-hq/seg
 from groundingdino.util.inference import load_model, predict
 from sam2.build_sam import build_sam2
 from sam2.sam2_image_predictor import SAM2ImagePredictor
-import torchvision.transforms as T
+from groundingdino.util.inference import load_image
 from PIL import Image
 
 GDINO_CFG  = '/work/courses/3dv/team22/FoundationPose-plus-plus/sam-hq/seginw/GroundingDINO/groundingdino/config/GroundingDINO_SwinT_OGC.py'
@@ -31,11 +31,7 @@ SAM2_CFG   = 'configs/sam2.1/sam2.1_hiera_s.yaml'
 FRAME      = '/work/courses/3dv/team22/foundationpose/data/20250804_104715/rgb/000000.png'
 OUT        = '/work/courses/3dv/team22/foundationpose/data/20250804_104715/test_hand_mask.png'
 
-transform = T.Compose([T.RandomResize([800], max_size=1333), T.ToTensor(),
-                       T.Normalize([0.485,0.456,0.406],[0.229,0.224,0.225])])
-img_pil = Image.open(FRAME).convert('RGB')
-img_t, _ = transform(img_pil, None)
-img_np = np.array(img_pil)
+img_np, img_t = load_image(FRAME)
 h, w = img_np.shape[:2]
 
 gdino = load_model(GDINO_CFG, GDINO_CKPT)
