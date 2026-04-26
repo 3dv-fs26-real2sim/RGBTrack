@@ -6,16 +6,14 @@
 
 . /etc/profile.d/modules.sh
 module load cuda/12.8
-export PATH=/work/courses/3dv/team22/py310_env/bin:$PATH
+source /work/courses/3dv/team22/miniconda3/bin/activate /work/courses/3dv/team22/miniconda3/envs/gsam_env
 export CUDA_HOME=/cluster/data/cuda/12.8
 export PATH=$CUDA_HOME/bin:$PATH
 export LD_LIBRARY_PATH=$CUDA_HOME/lib64:$LD_LIBRARY_PATH
-export LD_LIBRARY_PATH=/work/courses/3dv/team22/py310_env/lib/python3.10/site-packages/nvidia/nccl/lib:$LD_LIBRARY_PATH
-export LD_LIBRARY_PATH=/work/courses/3dv/team22/py310_env/lib/python3.10/site-packages/torch/lib:$LD_LIBRARY_PATH
 
 cd /work/courses/3dv/team22/RGBTrack
 
-/work/courses/3dv/team22/py310_env/bin/python - <<'EOF'
+python - <<'EOF'
 import sys, os, cv2, numpy as np, torch
 sys.path.insert(0, '/work/courses/3dv/team22/GroundingDINO')
 from groundingdino.util.inference import load_model, predict
