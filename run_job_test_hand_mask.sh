@@ -33,8 +33,8 @@ img_np, img_t = load_image(FRAME)
 h, w = img_np.shape[:2]
 
 gdino = load_model(GDINO_CFG, GDINO_CKPT)
-boxes, logits, phrases = predict(model=gdino, image=img_t, caption='robotic hand',
-                                  box_threshold=0.30, text_threshold=0.25)
+boxes, logits, phrases = predict(model=gdino, image=img_t, caption='white and black robotic hand',
+                                  box_threshold=0.25, text_threshold=0.20)
 print(f'Detections: {len(boxes)}')
 for i in range(len(boxes)):
     cx,cy,bw,bh = boxes[i].tolist()
