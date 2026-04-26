@@ -69,7 +69,7 @@ if __name__ == "__main__":
         gray = cv2.cvtColor(rgb, cv2.COLOR_BGR2GRAY) if rgb is not None \
                else np.zeros(mag.shape, np.uint8)
 
-        # Warp previous edges forward and take max
+        # Warp previous edges forward with decay, take max with current
         if prev_edges is not None and prev_gray is not None:
             flow = cv2.calcOpticalFlowFarneback(
                 prev_gray, gray, None,
@@ -81,7 +81,8 @@ if __name__ == "__main__":
             warped = cv2.remap(prev_edges, map_x, map_y,
                                interpolation=cv2.INTER_LINEAR,
                                borderMode=cv2.BORDER_CONSTANT, borderValue=0)
-            mag = np.maximum(mag, warped)
+            # Decay warped edges — they fade unless reinforced by current frame
+            mag = np.maximum(mag, warped * 0.75)
 
         mag_u8 = np.clip(mag, 0, 255).astype(np.uint8)
         cv2.imwrite(os.path.join(args.out_dir, os.path.basename(p)), mag_u8)
