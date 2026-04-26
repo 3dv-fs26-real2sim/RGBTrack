@@ -118,15 +118,9 @@ def make_colorbar(vmin, vmax, h, bar_w=60, font_scale=0.45):
 
 def make_frame(rgb, depth, vmin, vmax, source_label):
     h, w = rgb.shape[:2]
-    depth_vis  = depth_to_rgb(depth, vmin, vmax)
-    colorbar   = make_colorbar(vmin, vmax, h)
-
-    # label on depth panel
-    depth_labeled = depth_vis.copy()
-    cv2.putText(depth_labeled, source_label, (10, 25),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2, cv2.LINE_AA)
-
-    return np.concatenate([rgb, depth_labeled, colorbar], axis=1)
+    depth_vis = depth_to_rgb(depth, vmin, vmax)
+    colorbar  = make_colorbar(vmin, vmax, h)
+    return np.concatenate([colorbar, depth_vis], axis=1)
 
 
 def main():
@@ -236,7 +230,7 @@ def main():
     first_color = reader.get_color(0)
     h, w = first_color.shape[:2]
     bar_w = 95
-    frame_w = w * 2 + bar_w
+    frame_w = w + bar_w
     out = cv2.VideoWriter(out_video, cv2.VideoWriter_fourcc(*"mp4v"), args.fps, (frame_w, h))
 
     for i in range(len(reader.color_files)):
