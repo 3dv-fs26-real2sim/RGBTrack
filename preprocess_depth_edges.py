@@ -69,7 +69,7 @@ if __name__ == "__main__":
         gray = cv2.cvtColor(rgb, cv2.COLOR_BGR2GRAY) if rgb is not None \
                else np.zeros(mag.shape, np.uint8)
 
-        # Warp previous edges forward with decay, take max with current
+        # Use flow prediction as spatial amplifier — only boosts current frame signal
         if prev_edges is not None and prev_gray is not None:
             flow = cv2.calcOpticalFlowFarneback(
                 prev_gray, gray, None,
@@ -78,11 +78,13 @@ if __name__ == "__main__":
             h, w = mag.shape
             map_x = (np.arange(w) + flow[:, :, 0]).astype(np.float32)
             map_y = (np.arange(h).reshape(-1, 1) + flow[:, :, 1]).astype(np.float32)
-            warped = cv2.remap(prev_edges, map_x, map_y,
-                               interpolation=cv2.INTER_LINEAR,
-                               borderMode=cv2.BORDER_CONSTANT, borderValue=0)
-            # Decay warped edges — they fade unless reinforced by current frame
-            mag = np.maximum(mag, warped * 0.75)
+            predicted = cv2.remap(prev_edges, map_x, map_y,
+                                  interpolation=cv2.INTER_LINEAR,
+                                  borderMode=cv2.BORDER_CONSTANT, borderValue=0)
+            # Where prediction is strong, amplify current edges (2x boost)
+            # Output is purely current frame — prediction only weights it
+            weight = 1.0 + (predicted / 255.0)
+            mag    = mag * weight
 
         mag_u8 = np.clip(mag, 0, 255).astype(np.uint8)
         cv2.imwrite(os.path.join(args.out_dir, os.path.basename(p)), mag_u8)
