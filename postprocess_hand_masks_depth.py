@@ -17,6 +17,10 @@ if __name__ == "__main__":
     ap.add_argument("--depth_dir",     required=True)
     ap.add_argument("--out_dir",       required=True)
     ap.add_argument("--depth_scale",   type=float, default=1.0)
+    ap.add_argument("--duck_margin",   type=float, default=0.05,
+                    help="Zero pixels this many metres in front of duck depth too")
+    ap.add_argument("--min_depth",     type=float, default=0.2,
+                    help="Also zero pixels closer than this (metres)")
     args = ap.parse_args()
 
     os.makedirs(args.out_dir, exist_ok=True)
@@ -40,11 +44,16 @@ if __name__ == "__main__":
             valid_px  = duck & (depth_m > 0.01)
             if valid_px.any():
                 duck_depth = float(depth_m[valid_px].mean())
-                hand[(depth_m >= duck_depth) & (depth_m > 0.01)] = 0
+                cutoff = duck_depth - args.duck_margin
+                hand[(depth_m >= cutoff) & (depth_m > 0.01)] = 0
+
+        # Zero pixels closer than min_depth
+        if depth is not None and depth_m is not None:
+            hand[(depth_m > 0.01) & (depth_m < args.min_depth)] = 0
 
         cv2.imwrite(os.path.join(args.out_dir, name), hand)
 
         if i % 100 == 0:
-            print(f"  frame {i}/{N}  duck_depth={duck_depth if depth is not None else 'n/a'}")
+            print(f"  frame {i}/{N}  duck_depth={duck_depth:.3f}  cutoff={cutoff:.3f}" if depth is not None else f"  frame {i}/{N}")
 
     print(f"Done → {args.out_dir}")

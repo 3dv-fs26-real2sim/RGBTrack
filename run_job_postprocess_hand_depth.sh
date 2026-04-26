@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH --account=3dv
-#SBATCH --time=00:10:00
+#SBATCH --time=01:00:00
 #SBATCH --output=/work/courses/3dv/team22/RGBTrack/logs/job_pp_hand_depth_%j.out
 #SBATCH --error=/work/courses/3dv/team22/RGBTrack/logs/job_pp_hand_depth_%j.err
 
