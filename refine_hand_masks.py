@@ -67,16 +67,13 @@ def reject_overgrowth(current_mask, predicted_mask, prev_mask,
       2. Find blobs: new pixels outside growth zone with area >= min_blob_area.
       3. Replace ONLY blob pixels with predicted values — leave everything else.
     """
-    # Never lose previous pixels
-    base = cv2.bitwise_or(current_mask, prev_mask)
-
     # Allowed growth zone around predicted
     dist_from_pred = cv2.distanceTransform(
         cv2.bitwise_not(predicted_mask), cv2.DIST_L2, 5)
     allowed = (dist_from_pred <= max_growth_px).astype(np.uint8) * 255
 
-    # New pixels (relative to predicted) outside allowed zone
-    new_px  = cv2.bitwise_and(base, cv2.bitwise_not(predicted_mask))
+    # New pixels outside allowed zone
+    new_px  = cv2.bitwise_and(current_mask, cv2.bitwise_not(predicted_mask))
     bad_new = cv2.bitwise_and(new_px, cv2.bitwise_not(allowed))
 
     n_lab, labels, stats, _ = cv2.connectedComponentsWithStats(bad_new,
@@ -87,7 +84,7 @@ def reject_overgrowth(current_mask, predicted_mask, prev_mask,
             blob_mask[labels == lbl] = 255
 
     # Replace only blob pixels with predicted
-    refined = base.copy()
+    refined = current_mask.copy()
     refined[blob_mask > 0] = predicted_mask[blob_mask > 0]
 
     return refined, bool(blob_mask.any())
