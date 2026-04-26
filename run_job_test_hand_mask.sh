@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --account=3dv
 #SBATCH --time=00:10:00
-#SBATCH --gres=gpu:2080ti:1
+#SBATCH --nodelist=studgpu-node05,studgpu-node13,studgpu-node21,studgpu-node29
 #SBATCH --output=/work/courses/3dv/team22/RGBTrack/logs/job_test_hand_%j.out
 #SBATCH --error=/work/courses/3dv/team22/RGBTrack/logs/job_test_hand_%j.err
 
