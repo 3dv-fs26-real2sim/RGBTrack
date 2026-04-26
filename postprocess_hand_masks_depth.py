@@ -39,6 +39,9 @@ if __name__ == "__main__":
         depth_path = os.path.join(args.depth_dir, name)
         depth      = cv2.imread(depth_path, cv2.IMREAD_UNCHANGED)
 
+        depth_m = None
+        duck_depth = None
+        cutoff = None
         if depth is not None and duck.any():
             depth_m   = depth.astype(np.float32) / 1000.0 * args.depth_scale
             valid_px  = duck & (depth_m > 0.01)
