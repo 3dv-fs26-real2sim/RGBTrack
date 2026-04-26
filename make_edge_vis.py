@@ -103,7 +103,19 @@ if __name__ == "__main__":
                 prev_gray, gray, tracked_pts, None)
             good = status.ravel() == 1
             if good.sum() >= 4:
-                tracked_pts = next_pts[good].reshape(-1, 1, 2)
+                pts_good      = tracked_pts[good].reshape(-1, 2)
+                next_good     = next_pts[good].reshape(-1, 2)
+                # Gate on lower 30% of contour points
+                y_thresh      = pts_good[:, 1].max() * 0.7
+                lower_mask    = pts_good[:, 1] >= y_thresh
+                if lower_mask.sum() > 0:
+                    lower_flow = np.linalg.norm(
+                        next_good[lower_mask] - pts_good[lower_mask], axis=1).mean()
+                else:
+                    lower_flow = 0.0
+                # Only update if lower part is actually moving
+                if lower_flow > 1.5:
+                    tracked_pts = next_good.reshape(-1, 1, 2)
 
         # Draw tracked duck contour as fine white lines
         duck_edges = np.zeros((h, w), np.uint8)
