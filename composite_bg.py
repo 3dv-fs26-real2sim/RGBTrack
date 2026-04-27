@@ -104,9 +104,15 @@ def main():
             still_black &= (hm_dilated <= 127)
         out[still_black] = bg_r[still_black]
 
-        # Slight smoothing to reduce video roughness
+        # Gradient-weighted smoothing: blur harder where transitions are harshest
         if args.smooth > 0:
-            out = cv2.GaussianBlur(out, (0, 0), args.smooth)
+            blurred = cv2.GaussianBlur(out, (0, 0), args.smooth)
+            gray = cv2.cvtColor(out, cv2.COLOR_BGR2GRAY).astype(np.float32)
+            grad = cv2.Laplacian(gray, cv2.CV_32F)
+            weight = np.abs(grad)
+            weight = (weight / (weight.max() + 1e-6)).clip(0, 1)[:, :, np.newaxis]
+            out = (out.astype(np.float32) * (1 - weight) +
+                   blurred.astype(np.float32) * weight).clip(0, 255).astype(np.uint8)
 
         cv2.imwrite(os.path.join(args.out_dir, name), out)
         if i % 100 == 0:
