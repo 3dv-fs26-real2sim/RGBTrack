@@ -153,6 +153,8 @@ def main():
                         help="Path to table_depth_masked.npz — applies RANSAC calibration per frame")
     parser.add_argument("--calibrate", action="store_true",
                         help="Run binary_search_depth on frame 0 to compute depth scale (same as tracking pipeline)")
+    parser.add_argument("--no_table_cutoff", action="store_true",
+                        help="Disable Otsu table cutoff — show full depth range (use for composited/bg frames)")
     parser.add_argument("--mesh_file", type=str,
                         default="/work/courses/3dv/team22/foundationpose/data/object/duck/duck.obj",
                         help="Mesh file for calibration (only used with --calibrate)")
@@ -216,17 +218,27 @@ def main():
         if depth is not None:
             sample_depths.append(depth * depth_scale)
 
-    # Table cutoff: use provided value or auto-detect
-    if args.table_depth is not None:
+    # Table cutoff: use provided value, auto-detect, or disable
+    if args.no_table_cutoff:
+        table_cutoff = None
+        print("Table cutoff disabled — showing full depth range")
+        valid_vals = np.concatenate([d[d > 0.1].ravel() for d in sample_depths])
+        vmin = float(np.percentile(valid_vals, 2))
+        vmax = float(np.percentile(valid_vals, 98))
+    elif args.table_depth is not None:
         table_cutoff = args.table_depth
         print(f"Using fixed table cutoff: {table_cutoff:.3f}m")
+        masked = [mask_background(d, table_cutoff) for d in sample_depths]
+        valid_vals = np.concatenate([d[d > 0.1].ravel() for d in masked])
+        vmin = float(np.percentile(valid_vals, 2))
+        vmax = table_cutoff
     else:
         table_cutoff = detect_table_cutoff(sample_depths)
-    masked = [mask_background(d, table_cutoff) for d in sample_depths]
-    valid_vals = np.concatenate([d[d > 0.1].ravel() for d in masked])
-    vmin = float(np.percentile(valid_vals, 2))
-    vmax = table_cutoff
-    print(f"Depth range (table only): {vmin:.3f}m – {vmax:.3f}m  (scale={depth_scale:.4f})")
+        masked = [mask_background(d, table_cutoff) for d in sample_depths]
+        valid_vals = np.concatenate([d[d > 0.1].ravel() for d in masked])
+        vmin = float(np.percentile(valid_vals, 2))
+        vmax = table_cutoff
+    print(f"Depth range: {vmin:.3f}m – {vmax:.3f}m  (scale={depth_scale:.4f})")
 
     # Second pass: write video
     first_color = reader.get_color(0)
@@ -240,7 +252,9 @@ def main():
         depth  = _get_depth(i, color, reader, args, depth_model, depth_sim_static)
         if depth is None:
             continue
-        depth  = mask_background(depth * depth_scale, table_cutoff)
+        depth  = depth * depth_scale
+        if table_cutoff is not None:
+            depth = mask_background(depth, table_cutoff)
         if args.rgb_mask_dir:
             rgb_m_path = os.path.join(args.rgb_mask_dir, f"{reader.id_strs[i]}.png")
             rgb_m = cv2.imread(rgb_m_path)
