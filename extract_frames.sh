@@ -14,7 +14,18 @@ if [ -z "$VIDEO" ] || [ -z "$SCENE_NAME" ]; then
 fi
 
 mkdir -p $OUT/rgb
-ffmpeg -y -i "$VIDEO" -vf "fps=50" -start_number 0 "$OUT/rgb/%06d.png"
+/work/courses/3dv/team22/py310_env/bin/python -c "
+import cv2, os
+cap = cv2.VideoCapture('$VIDEO')
+i = 0
+while True:
+    ret, frame = cap.read()
+    if not ret: break
+    cv2.imwrite(f'$OUT/rgb/{i:06d}.png', frame)
+    i += 1
+cap.release()
+print('extracted', i)
+"
 
 cp $REF_SCENE/cam_K.txt $OUT/cam_K.txt
 echo "Extracted $(ls $OUT/rgb | wc -l) frames -> $OUT/rgb"
