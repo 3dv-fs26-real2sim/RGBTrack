@@ -79,6 +79,10 @@ def main():
             if hm is not None and orig is not None:
                 out[hm > 127] = orig[hm > 127]
 
+        # Final pass: any remaining near-black pixel → background (kills boundary remnants)
+        still_black = out.max(axis=2) < args.black_thr
+        out[still_black] = bg_r[still_black]
+
         cv2.imwrite(os.path.join(args.out_dir, name), out)
         if i % 100 == 0:
             print(f"  {i}/{len(paths)}")
