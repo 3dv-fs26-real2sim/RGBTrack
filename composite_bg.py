@@ -26,6 +26,8 @@ def main():
                     help="Morphological closing radius on foreground mask (fills surface-tension black gaps at tight boundaries)")
     ap.add_argument("--feather_px",    type=int, default=0,
                     help="Gaussian feather radius for edge blend (0=off, avoids arm translucency)")
+    ap.add_argument("--smooth",        type=float, default=0.6,
+                    help="Gaussian sigma for final frame smoothing (0=off)")
     args = ap.parse_args()
 
     use_hand = args.hand_mask_dir and args.orig_dir
@@ -82,6 +84,10 @@ def main():
         # Final pass: any remaining near-black pixel → background (kills boundary remnants)
         still_black = out.max(axis=2) < args.black_thr
         out[still_black] = bg_r[still_black]
+
+        # Slight smoothing to reduce video roughness
+        if args.smooth > 0:
+            out = cv2.GaussianBlur(out, (0, 0), args.smooth)
 
         cv2.imwrite(os.path.join(args.out_dir, name), out)
         if i % 100 == 0:
