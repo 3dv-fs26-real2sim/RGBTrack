@@ -26,6 +26,8 @@ DEPTH_DIRS = {
     "metric3d":      "depth_metric3d",
     "depth_pro":     "depth_pro",
     "vggt":          "depth_vggt",
+    "vda_nobg":      "depth_vda_nobg",
+    "vda_bg11":      "depth_vda_bg11",
 }
 
 COLORS = {
@@ -35,6 +37,8 @@ COLORS = {
     "metric3d":      "#55A868",
     "depth_pro":     "#C44E52",
     "vggt":          "#8172B3",
+    "vda_nobg":      "#E91E63",
+    "vda_bg11":      "#00BCD4",
 }
 
 DEPTH_MIN = 0.05   # m
@@ -145,6 +149,8 @@ def main():
                         help="overlay: all on one plot, grid: one subplot per source")
     parser.add_argument("--no_scale", action="store_true",
                         help="Skip scaling — show raw depth values as loaded")
+    parser.add_argument("--duck_only", action="store_true",
+                        help="Only include pixels inside the duck mask in the histogram")
     args = parser.parse_args()
 
     sources = [s.strip() for s in args.source.split(",")]
@@ -200,10 +206,17 @@ def main():
 
     writer = None
     for i, id_str in enumerate(id_strs):
+        duck_mask = load_mask(masks_dir, id_str) if args.duck_only else None
         depths_scaled = []
         for d_dir, scale in zip(depth_dirs, scales):
             d = load_depth(d_dir, id_str)
-            depths_scaled.append(d * scale if d is not None else None)
+            if d is not None:
+                ds = d * scale
+                if duck_mask is not None and duck_mask.shape == ds.shape:
+                    ds = np.where(duck_mask, ds, 0.0)
+                depths_scaled.append(ds)
+            else:
+                depths_scaled.append(None)
 
         frame = render_histogram(depths_scaled, labels, colors, i, len(id_strs), bins, args.layout, global_ymax)
 
