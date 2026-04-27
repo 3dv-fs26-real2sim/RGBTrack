@@ -11,9 +11,12 @@ import numpy as np
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--fg_dir",        required=True, help="rgb_masked frames dir")
+    ap.add_argument("--fg_dir",        required=True, help="Foreground frames dir (pixels to keep)")
     ap.add_argument("--bg_file",       required=True, help="background PNG")
     ap.add_argument("--out_dir",       required=True)
+    ap.add_argument("--mask_src_dir",  default=None,
+                    help="If set, black mask is computed from this dir instead of fg_dir "
+                         "(use rgb_masked/ as mask source while fg_dir=rgb/ for full-quality foreground)")
     ap.add_argument("--orig_dir",      default=None,
                     help="Original rgb/ dir — arm pixels stamped from here when --hand_mask_dir set")
     ap.add_argument("--hand_mask_dir", default=None,
@@ -49,8 +52,10 @@ def main():
         name = os.path.basename(p)
         fg = cv2.imread(p)
 
-        # Black mask: pixels where all channels are dark
-        black = (fg.max(axis=2) < args.black_thr).astype(np.uint8) * 255
+        # Black mask: compute from mask_src_dir if given, else from fg itself
+        mask_src = cv2.imread(os.path.join(args.mask_src_dir, name)) \
+            if args.mask_src_dir else fg
+        black = (mask_src.max(axis=2) < args.black_thr).astype(np.uint8) * 255
 
         # Remove small isolated blobs
         if args.open_px > 0:
