@@ -22,6 +22,8 @@ def main():
                     help="Pixel max-channel below this = background")
     ap.add_argument("--open_px",       type=int, default=3,
                     help="Morphological opening radius on black mask (removes blobs)")
+    ap.add_argument("--close_px",      type=int, default=4,
+                    help="Morphological closing radius on foreground mask (fills surface-tension black gaps at tight boundaries)")
     ap.add_argument("--feather_px",    type=int, default=0,
                     help="Gaussian feather radius for edge blend (0=off, avoids arm translucency)")
     args = ap.parse_args()
@@ -36,8 +38,10 @@ def main():
     H, W = fg0.shape[:2]
     bg_r = cv2.resize(bg, (W, H))
 
-    open_k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE,
-                                       (2*args.open_px+1, 2*args.open_px+1))
+    open_k  = cv2.getStructuringElement(cv2.MORPH_ELLIPSE,
+                                        (2*args.open_px+1,  2*args.open_px+1))
+    close_k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE,
+                                        (2*args.close_px+1, 2*args.close_px+1))
 
     for i, p in enumerate(paths):
         name = os.path.basename(p)
@@ -49,6 +53,12 @@ def main():
         # Remove small isolated blobs
         if args.open_px > 0:
             black = cv2.morphologyEx(black, cv2.MORPH_OPEN, open_k)
+
+        # Fill narrow black gaps at tight foreground junctions (surface tension)
+        if args.close_px > 0:
+            fg_mask = 255 - black
+            fg_mask = cv2.morphologyEx(fg_mask, cv2.MORPH_CLOSE, close_k)
+            black = 255 - fg_mask
 
         # Feathered alpha: 1 where background, 0 where foreground
         if args.feather_px > 0:
