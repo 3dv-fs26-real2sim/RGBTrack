@@ -27,17 +27,20 @@ DATA = "/work/courses/3dv/team22/foundationpose/data"
 SAM2_CKPT = "/work/courses/3dv/team22/RGBTrack/segment-anything-2-real-time/sam2.1_hiera_small.pt"
 SAM2_CFG  = "configs/sam2.1/sam2.1_hiera_s.yaml"
 
-# (scene, click_offset_xy_from_center)
+# (scene, absolute_xy_from_top_left)  — None means use centre + offset path below
 SCENES = [
-    ("20250804_113654", ( 0,  20)),
-    ("20250804_124203", ( 0,   0)),
-    ("20250806_102854", (40,  40)),
+    ("20250804_113654", (345, 278)),  # 345x from L, 202 from bottom (480-202=278)
+    ("20250804_124203", None),         # already correct from previous run, skip
+    ("20250806_102854", (385, 308)),  # 385x, 172 from bottom (480-172=308)
 ]
 
 sam2 = build_sam2(SAM2_CFG, SAM2_CKPT, device="cuda")
 predictor = SAM2ImagePredictor(sam2)
 
-for scene, (dx, dy) in SCENES:
+for scene, click in SCENES:
+    if click is None:
+        print(f"[{scene}] skipping (already correct)")
+        continue
     img_path = f"{DATA}/{scene}/rgb/000000.png"
     out_dir  = f"{DATA}/{scene}/masks"
     out_path = f"{out_dir}/000000.png"
@@ -48,7 +51,7 @@ for scene, (dx, dy) in SCENES:
         print(f"[SKIP] {scene}: no frame 0 at {img_path}")
         continue
     h, w = img.shape[:2]
-    cx, cy = w // 2 + dx, h // 2 + dy
+    cx, cy = click
     print(f"[{scene}] click=({cx},{cy}) on {w}x{h}")
 
     rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
