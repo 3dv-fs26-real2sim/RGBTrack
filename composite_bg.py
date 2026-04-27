@@ -26,7 +26,7 @@ def main():
                     help="Morphological closing radius on foreground mask (fills surface-tension black gaps at tight boundaries)")
     ap.add_argument("--feather_px",    type=int, default=0,
                     help="Gaussian feather radius for edge blend (0=off, avoids arm translucency)")
-    ap.add_argument("--smooth",        type=float, default=0.6,
+    ap.add_argument("--smooth",        type=float, default=0.0,
                     help="Gaussian sigma for final frame smoothing (0=off)")
     args = ap.parse_args()
 
@@ -74,7 +74,8 @@ def main():
         out = (fg.astype(np.float32) * (1 - alpha3) +
                bg_r.astype(np.float32) * alpha3).clip(0, 255).astype(np.uint8)
 
-        # Stamp arm pixels from original RGB — fully opaque, overrides any blending
+        # Load hand mask once for both stamp and final-pass protection
+        hm = None
         if use_hand:
             hm = cv2.imread(os.path.join(args.hand_mask_dir, name), cv2.IMREAD_GRAYSCALE)
             orig = cv2.imread(os.path.join(args.orig_dir, name))
@@ -82,7 +83,10 @@ def main():
                 out[hm > 127] = orig[hm > 127]
 
         # Final pass: any remaining near-black pixel → background (kills boundary remnants)
+        # Exclude arm pixels so dark robot parts are not wiped out
         still_black = out.max(axis=2) < args.black_thr
+        if hm is not None:
+            still_black &= (hm <= 127)
         out[still_black] = bg_r[still_black]
 
         # Slight smoothing to reduce video roughness
