@@ -31,6 +31,8 @@ def main():
                     help="Gaussian feather radius for edge blend (0=off, avoids arm translucency)")
     ap.add_argument("--smooth",        type=float, default=0.0,
                     help="Gaussian sigma for final frame smoothing (0=off)")
+    ap.add_argument("--hand_dilate_px",type=int,   default=15,
+                    help="Dilate hand mask by this many pixels before using it to protect arm from black replacement")
     args = ap.parse_args()
 
     use_hand = args.hand_mask_dir and args.orig_dir
@@ -81,17 +83,25 @@ def main():
 
         # Load hand mask once for both stamp and final-pass protection
         hm = None
+        hm_dilated = None
         if use_hand:
             hm = cv2.imread(os.path.join(args.hand_mask_dir, name), cv2.IMREAD_GRAYSCALE)
             orig = cv2.imread(os.path.join(args.orig_dir, name))
             if hm is not None and orig is not None:
+                # Dilated mask used to protect arm region from black replacement
+                if args.hand_dilate_px > 0:
+                    dil_k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE,
+                                (2*args.hand_dilate_px+1, 2*args.hand_dilate_px+1))
+                    hm_dilated = cv2.dilate(hm, dil_k)
+                else:
+                    hm_dilated = hm
                 out[hm > 127] = orig[hm > 127]
 
         # Final pass: any remaining near-black pixel → background (kills boundary remnants)
-        # Exclude arm pixels so dark robot parts are not wiped out
+        # Use dilated mask to protect full arm extent from being wiped
         still_black = out.max(axis=2) < args.black_thr
-        if hm is not None:
-            still_black &= (hm <= 127)
+        if hm_dilated is not None:
+            still_black &= (hm_dilated <= 127)
         out[still_black] = bg_r[still_black]
 
         # Slight smoothing to reduce video roughness
