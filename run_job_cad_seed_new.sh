@@ -10,6 +10,7 @@
 SCENE=${1:?need scene name}
 MODE=${2:-write}
 DILATE=${DILATE:-0}     # pixels to dilate CAD mask (covers BSD pose slop); 0 = no dilation
+ITERS=${ITERS:-2}       # BSD → CAD render → BSD again, repeat ITERS times
 
 . /etc/profile.d/modules.sh
 module load cuda/12.8
@@ -24,7 +25,7 @@ export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 cd /work/courses/3dv/team22/RGBTrack
 
-SCENE_NAME=$SCENE MODE=$MODE DILATE=$DILATE /work/courses/3dv/team22/py310_env/bin/python - <<'PYEOF'
+SCENE_NAME=$SCENE MODE=$MODE DILATE=$DILATE ITERS=$ITERS /work/courses/3dv/team22/py310_env/bin/python - <<'PYEOF'
 import cv2, os, numpy as np, trimesh
 from estimater import *
 from datareader import *
@@ -39,7 +40,8 @@ MESH  = "/work/courses/3dv/team22/foundationpose/data/object/duck/duck.obj"
 scene  = os.environ["SCENE_NAME"]
 mode   = os.environ.get("MODE", "write")
 check  = mode in ("--check", "check")
-dilate = int(os.environ.get("DILATE", "5"))
+dilate = int(os.environ.get("DILATE", "0"))
+iters  = int(os.environ.get("ITERS", "2"))
 
 mesh = trimesh.load(MESH)
 mesh.apply_scale(0.001)
@@ -60,19 +62,23 @@ color  = cv2.cvtColor(cv2.imread(f"{SCENE_DIR}/rgb/000000.png"), cv2.COLOR_BGR2R
 mask0  = (cv2.imread(seed_path, cv2.IMREAD_GRAYSCALE) > 127).astype(bool)
 assert mask0.any(), "empty seed"
 
-pose = binary_search_depth(est, mesh, color, mask0, reader.K, debug=False)
-print(f"[{scene}] BSD pose Z={pose[2,3]:.3f}m")
-
 h, w = color.shape[:2]
-new_mask = render_cad_mask(pose, mesh, reader.K, w=w, h=h)
-assert new_mask is not None, "render returned None"
-new_u8 = (new_mask.astype(np.uint8)) * 255
+cur_mask = mask0
+for it in range(iters):
+    pose = binary_search_depth(est, mesh, color, cur_mask, reader.K, debug=False)
+    print(f"[{scene}] iter {it+1}/{iters} BSD pose Z={pose[2,3]:.3f}m")
+    rendered = render_cad_mask(pose, mesh, reader.K, w=w, h=h)
+    assert rendered is not None, "render returned None"
+    cur_mask = rendered > 0
+    print(f"[{scene}] iter {it+1}/{iters} CAD mask {int(cur_mask.sum())} px")
+
+new_u8 = (cur_mask.astype(np.uint8)) * 255
 if dilate > 0:
     k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2*dilate+1, 2*dilate+1))
     new_u8 = cv2.dilate(new_u8, k)
 new_mask = new_u8 > 127
 n_px   = int(new_mask.sum())
-print(f"[{scene}] dilated by {dilate}px -> {n_px} px")
+print(f"[{scene}] final mask: {n_px} px (dilate={dilate}px)")
 
 # Always save a preview overlay so we can verify visually
 preview = cv2.cvtColor(color, cv2.COLOR_RGB2BGR).copy()
