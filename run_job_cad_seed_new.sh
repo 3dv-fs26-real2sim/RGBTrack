@@ -9,7 +9,7 @@
 #   sbatch run_job_cad_seed_new.sh <SCENE_NAME> --check     # render but DON'T overwrite; save preview overlay
 SCENE=${1:?need scene name}
 MODE=${2:-write}
-DILATE=${DILATE:-5}     # pixels to dilate CAD mask (covers BSD pose slop)
+DILATE=${DILATE:-0}     # pixels to dilate CAD mask (covers BSD pose slop); 0 = no dilation
 
 . /etc/profile.d/modules.sh
 module load cuda/12.8

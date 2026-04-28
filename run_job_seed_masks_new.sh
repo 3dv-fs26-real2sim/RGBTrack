@@ -31,7 +31,7 @@ SAM2_CFG  = "configs/sam2.1/sam2.1_hiera_s.yaml"
 SCENES = [
     ("20250804_113654", (345, 278)),  # 345x from L, 202 from bottom (480-202=278)
     ("20250804_124203", None),         # already correct from previous run, skip
-    ("20250806_102854", (385, 308)),  # 385x, 172 from bottom (480-172=308)
+    ("20250806_102854", (310, 295)),  # duck body — left of purple bowl
 ]
 
 sam2 = build_sam2(SAM2_CFG, SAM2_CKPT, device="cuda")
