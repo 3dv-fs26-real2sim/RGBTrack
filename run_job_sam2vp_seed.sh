@@ -109,29 +109,11 @@ print(f"[{scene}] BSD pose Z={pose[2,3]:.3f}m")
 
 cad = render_cad_mask(pose, mesh, reader.K, w=w, h=h)
 assert cad is not None, "CAD render failed"
-cad_bool = cad > 0
-print(f"[{scene}] CAD mask: {int(cad_bool.sum())} px")
-
-# ── SAM2VP again, prompted with the CAD mask: refine to actual duck pixels ─
-del est, scorer, refiner, glctx
-torch.cuda.empty_cache()
-
-predictor2 = build_sam2_video_predictor(SAM2_CFG, SAM2_CKPT, device="cuda")
-with torch.inference_mode(), torch.autocast("cuda", dtype=torch.bfloat16):
-    state2 = predictor2.init_state(video_path=JPG_DIR,
-                                    offload_video_to_cpu=True,
-                                    offload_state_to_cpu=True)
-    _, _, mlogits2 = predictor2.add_new_mask(state2, frame_idx=0, obj_id=1, mask=cad_bool)
-    m2 = (mlogits2[0] > 0.0).cpu().numpy()
-    if m2.ndim == 3: m2 = m2[0]
-    m2 = binary_fill_holes(m2).astype(np.uint8) * 255
-
-cad_u8 = m2
-cad    = cad_u8 > 127
-print(f"[{scene}] SAM2VP refined: {int(cad.sum())} px")
+cad_u8 = (cad.astype(np.uint8)) * 255
+print(f"[{scene}] CAD mask: {int((cad>0).sum())} px")
 
 cv2.imwrite(out_path, cad_u8)
-print(f"[{scene}] saved seed -> {out_path}")
+print(f"[{scene}] saved CAD seed -> {out_path}")
 
 # Preview overlay (red = final CAD, green dot = click)
 img = color0.copy()
