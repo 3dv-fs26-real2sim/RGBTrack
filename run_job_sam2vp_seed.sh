@@ -48,19 +48,18 @@ assert scene in CLICKS, f"no click defined for {scene}"
 cx, cy = CLICKS[scene]
 
 SCENE_DIR = f"{DATA}/{scene}"
-JPG_DIR   = f"{SCENE_DIR}/rgb_jpg"
+JPG_DIR   = f"{SCENE_DIR}/seed_jpg"   # tiny dir, only frame 0 — avoids OOM on long videos
 out_path  = f"{SCENE_DIR}/masks/000000.png"
 os.makedirs(os.path.dirname(out_path), exist_ok=True)
 os.makedirs(JPG_DIR, exist_ok=True)
 os.makedirs(DEBUG, exist_ok=True)
 
-# Convert PNG → JPG for SAM2VP
+# Only need frame 0 for the seed mask
 png_files = sorted(glob.glob(f"{SCENE_DIR}/rgb/*.png"))
-for p in png_files:
-    out = f"{JPG_DIR}/" + os.path.splitext(os.path.basename(p))[0] + ".jpg"
-    if not os.path.exists(out):
-        cv2.imwrite(out, cv2.imread(p), [cv2.IMWRITE_JPEG_QUALITY, 95])
-print(f"[{scene}] frames: {len(png_files)}  click=({cx},{cy})")
+out0 = f"{JPG_DIR}/000000.jpg"
+if not os.path.exists(out0):
+    cv2.imwrite(out0, cv2.imread(png_files[0]), [cv2.IMWRITE_JPEG_QUALITY, 95])
+print(f"[{scene}] total frames in scene: {len(png_files)}  click=({cx},{cy})")
 
 predictor = build_sam2_video_predictor(SAM2_CFG, SAM2_CKPT, device="cuda")
 with torch.inference_mode(), torch.autocast("cuda", dtype=torch.bfloat16):
