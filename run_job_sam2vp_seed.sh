@@ -27,12 +27,19 @@ export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 cd /work/courses/3dv/team22/RGBTrack
 
 SCENE=$SCENE /work/courses/3dv/team22/py310_env/bin/python - <<'PYEOF'
-import cv2, os, glob, torch, numpy as np
+import cv2, os, glob, torch, numpy as np, trimesh
 from scipy.ndimage import binary_fill_holes
 from sam2.build_sam import build_sam2_video_predictor
+from estimater import *
+from datareader import *
+from tools import *
+
+set_seed(0)
+set_logging_format()
 
 DATA  = "/work/courses/3dv/team22/foundationpose/data"
 DEBUG = "/work/courses/3dv/team22/foundationpose/debug"
+MESH  = "/work/courses/3dv/team22/foundationpose/data/object/duck/duck.obj"
 SAM2_CKPT = "/work/courses/3dv/team22/RGBTrack/segment-anything-2-real-time/sam2.1_hiera_small.pt"
 SAM2_CFG  = "configs/sam2.1/sam2.1_hiera_s.yaml"
 
@@ -75,12 +82,42 @@ with torch.inference_mode(), torch.autocast("cuda", dtype=torch.bfloat16):
     if m.ndim == 3: m = m[0]
     m = binary_fill_holes(m).astype(np.uint8) * 255
 
-cv2.imwrite(out_path, m)
-print(f"[{scene}] saved seed -> {out_path} ({int((m>127).sum())} px)")
+sam_mask = m > 127
+print(f"[{scene}] SAM2VP seed: {int(sam_mask.sum())} px")
 
-# Preview overlay
-img = cv2.imread(png_files[0])
-img[m > 127] = (0.4 * img[m > 127] + 0.6 * np.array([0, 0, 255])).astype(np.uint8)
+del predictor, state
+torch.cuda.empty_cache()
+
+# ── BSD + CAD render: refine to full duck silhouette ──────────────────────
+mesh = trimesh.load(MESH)
+mesh.apply_scale(0.001)
+
+scorer  = ScorePredictor()
+refiner = PoseRefinePredictor()
+glctx   = dr.RasterizeCudaContext()
+est = FoundationPose(model_pts=mesh.vertices, model_normals=mesh.vertex_normals,
+                     mesh=mesh, scorer=scorer, refiner=refiner,
+                     debug=0, debug_dir="/tmp", glctx=glctx)
+
+reader = YcbineoatReader(video_dir=SCENE_DIR, shorter_side=None, zfar=np.inf)
+color0 = cv2.imread(png_files[0])
+rgb0   = cv2.cvtColor(color0, cv2.COLOR_BGR2RGB)
+h, w   = rgb0.shape[:2]
+
+pose = binary_search_depth(est, mesh, rgb0, sam_mask, reader.K, debug=False)
+print(f"[{scene}] BSD pose Z={pose[2,3]:.3f}m")
+
+cad = render_cad_mask(pose, mesh, reader.K, w=w, h=h)
+assert cad is not None, "CAD render failed"
+cad_u8 = (cad.astype(np.uint8)) * 255
+print(f"[{scene}] CAD mask: {int((cad>0).sum())} px")
+
+cv2.imwrite(out_path, cad_u8)
+print(f"[{scene}] saved seed -> {out_path}")
+
+# Preview overlay (red = final CAD, green dot = click)
+img = color0.copy()
+img[cad > 0] = (0.4 * img[cad > 0] + 0.6 * np.array([0, 0, 255])).astype(np.uint8)
 cv2.circle(img, (cx, cy), 4, (0, 255, 0), -1)
 cv2.imwrite(f"{DEBUG}/sam2vp_seed_{scene}.png", img)
 print(f"[{scene}] preview -> {DEBUG}/sam2vp_seed_{scene}.png")
