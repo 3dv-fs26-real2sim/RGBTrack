@@ -107,17 +107,12 @@ h, w   = rgb0.shape[:2]
 pose = binary_search_depth(est, mesh, rgb0, sam_mask, reader.K, debug=False)
 print(f"[{scene}] BSD pose Z={pose[2,3]:.3f}m")
 
-# Proper full CAD silhouette: project ALL vertices, take convex hull, fill
-verts = np.array(mesh.vertices)
-verts_h = np.hstack([verts, np.ones((len(verts), 1))])
-verts_cam = (pose @ verts_h.T).T[:, :3]
-proj = (reader.K @ verts_cam.T).T
-proj = proj[:, :2] / proj[:, 2:3]
-hull = cv2.convexHull(np.int32(proj).reshape(-1, 1, 2))
-cad_u8 = np.zeros((h, w), dtype=np.uint8)
-cv2.fillPoly(cad_u8, [hull], 255)
-cad = cad_u8 > 127
-print(f"[{scene}] CAD silhouette (full hull): {int(cad.sum())} px")
+# Proper rasterization of duck.obj via nvdiffrast (includes concavities)
+_, _, mask_r = est.render_rgbd(mesh, pose[None], reader.K, w, h)
+mask_np = mask_r[0].cpu().numpy() if mask_r.ndim == 3 else mask_r.cpu().numpy()
+cad_u8  = (mask_np > 0.5).astype(np.uint8) * 255
+cad     = cad_u8 > 127
+print(f"[{scene}] CAD silhouette (nvdiffrast): {int(cad.sum())} px")
 
 cv2.imwrite(out_path, cad_u8)
 print(f"[{scene}] saved CAD seed -> {out_path}")
