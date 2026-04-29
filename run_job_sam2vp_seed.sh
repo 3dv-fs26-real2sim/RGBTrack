@@ -88,10 +88,10 @@ print(f"[{scene}] SAM2VP seed: {int(sam_mask.sum())} px  (used only for click lo
 del predictor, state
 torch.cuda.empty_cache()
 
-# Use a neutral circle mask for BSD — avoids biasing the depth search toward partial duck
-RADIUS = 120
-circle_mask = np.zeros((h, w), dtype=bool)
-cv2.circle(circle_mask.view(np.uint8), (cx, cy), RADIUS, 1, -1)
+# Dilate SAM2VP mask to cover full duck including hat
+dil_k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (61, 61))
+dilated = cv2.dilate(sam_mask.astype(np.uint8) * 255, dil_k)
+circle_mask = dilated > 127
 circle_mask = circle_mask.astype(bool)
 
 # ── BSD + CAD render: refine to full duck silhouette ──────────────────────
