@@ -104,10 +104,8 @@ color0 = cv2.imread(png_files[0])
 rgb0   = cv2.cvtColor(color0, cv2.COLOR_BGR2RGB)
 h, w   = rgb0.shape[:2]
 
-pose = est.register_without_depth(K=reader.K, rgb=rgb0,
-                                   ob_mask=sam_mask.astype(np.uint8),
-                                   iteration=5)
-print(f"[{scene}] Registered pose Z={pose[2,3]:.3f}m")
+pose = binary_search_depth(est, mesh, rgb0, sam_mask, reader.K, debug=False)
+print(f"[{scene}] BSD pose Z={pose[2,3]:.3f}m")
 
 # Proper rasterization of duck.obj via nvdiffrast (includes concavities)
 _, _, mask_r = est.render_rgbd(mesh, pose[None], reader.K, w, h)
