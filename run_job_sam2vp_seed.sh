@@ -83,10 +83,16 @@ with torch.inference_mode(), torch.autocast("cuda", dtype=torch.bfloat16):
     m = binary_fill_holes(m).astype(np.uint8) * 255
 
 sam_mask = m > 127
-print(f"[{scene}] SAM2VP seed: {int(sam_mask.sum())} px")
+print(f"[{scene}] SAM2VP seed: {int(sam_mask.sum())} px  (used only for click location; BSD gets a neutral circle)")
 
 del predictor, state
 torch.cuda.empty_cache()
+
+# Use a neutral circle mask for BSD — avoids biasing the depth search toward partial duck
+RADIUS = 120
+circle_mask = np.zeros((h, w), dtype=bool)
+cv2.circle(circle_mask.view(np.uint8), (cx, cy), RADIUS, 1, -1)
+circle_mask = circle_mask.astype(bool)
 
 # ── BSD + CAD render: refine to full duck silhouette ──────────────────────
 mesh = trimesh.load(MESH)
@@ -104,7 +110,7 @@ color0 = cv2.imread(png_files[0])
 rgb0   = cv2.cvtColor(color0, cv2.COLOR_BGR2RGB)
 h, w   = rgb0.shape[:2]
 
-pose = binary_search_depth(est, mesh, rgb0, sam_mask, reader.K, debug=False)
+pose = binary_search_depth(est, mesh, rgb0, circle_mask, reader.K, debug=False)
 print(f"[{scene}] BSD pose Z={pose[2,3]:.3f}m")
 
 # Proper rasterization of duck.obj via nvdiffrast (includes concavities)
