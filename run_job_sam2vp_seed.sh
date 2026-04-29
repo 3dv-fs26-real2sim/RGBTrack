@@ -38,7 +38,7 @@ set_seed(0)
 set_logging_format()
 
 DATA  = "/work/courses/3dv/team22/foundationpose/data"
-DEBUG = "/work/courses/3dv/team22/foundationpose/debug"
+DEBUG = "/work/scratch/hudela"
 MESH  = "/work/courses/3dv/team22/foundationpose/data/object/duck/duck.obj"
 SAM2_CKPT = "/work/courses/3dv/team22/RGBTrack/segment-anything-2-real-time/sam2.1_hiera_small.pt"
 SAM2_CFG  = "configs/sam2.1/sam2.1_hiera_s.yaml"

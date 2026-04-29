@@ -24,7 +24,7 @@ mkdir -p logs
     --rgb_dir        /work/courses/3dv/team22/foundationpose/data/20250804_104715/rgb_bg11 \
     --depth_dir      /work/courses/3dv/team22/foundationpose/data/20250804_104715/depth_vda_bg11 \
     --masks_dir      /work/courses/3dv/team22/foundationpose/data/20250804_104715/masks \
-    --debug_dir      /work/courses/3dv/team22/foundationpose/debug/duck_fp_bg11 \
+    --debug_dir      /work/scratch/hudela/duck_fp_bg11 \
     --est_refine_iter 2 \
     --track_refine_iter 2 \
     --debug 2

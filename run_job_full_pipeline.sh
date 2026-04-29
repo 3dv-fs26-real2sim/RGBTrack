@@ -9,7 +9,7 @@
 SCENE_NAME=${1:-20250804_104715}
 SCENE_DIR=/work/courses/3dv/team22/foundationpose/data/$SCENE_NAME
 MESH=/work/courses/3dv/team22/foundationpose/data/object/duck/duck.obj
-DEBUG=/work/courses/3dv/team22/foundationpose/debug
+DEBUG=/work/scratch/hudela
 
 . /etc/profile.d/modules.sh
 module load cuda/12.8
