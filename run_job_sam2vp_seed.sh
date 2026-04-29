@@ -104,11 +104,18 @@ color0 = cv2.imread(png_files[0])
 rgb0   = cv2.cvtColor(color0, cv2.COLOR_BGR2RGB)
 h, w   = rgb0.shape[:2]
 
-# Full register: depth search + rotation/translation refinement
-pose = est.register_without_depth(K=reader.K, rgb=rgb0,
-                                   ob_mask=sam_mask.astype(np.uint8),
-                                   iteration=5)
-print(f"[{scene}] Registered pose Z={pose[2,3]:.3f}m")
+# Use real depth if available for accurate pose, else fall back to depth-free
+depth0_path = f"{SCENE_DIR}/depth_vda/000000.png"
+if os.path.exists(depth0_path):
+    depth0 = cv2.imread(depth0_path, cv2.IMREAD_UNCHANGED).astype(np.float32) / 1000.0
+    pose = est.register(K=reader.K, rgb=rgb0, depth=depth0,
+                        ob_mask=sam_mask.astype(np.uint8), iteration=5)
+    print(f"[{scene}] Registered WITH depth, Z={pose[2,3]:.3f}m")
+else:
+    pose = est.register_without_depth(K=reader.K, rgb=rgb0,
+                                       ob_mask=sam_mask.astype(np.uint8),
+                                       iteration=5)
+    print(f"[{scene}] Registered WITHOUT depth, Z={pose[2,3]:.3f}m")
 
 # Proper rasterization of duck.obj via nvdiffrast (includes concavities)
 _, _, mask_r = est.render_rgbd(mesh, pose[None], reader.K, w, h)
