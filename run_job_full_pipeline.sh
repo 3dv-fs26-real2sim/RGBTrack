@@ -91,11 +91,17 @@ echo ""
 echo "[2/3] VDA streaming depth → $SCENE_DIR/depth_vda"
 echo "--------------------------------------------------"
 
-$PY generate_vda_streaming_maps.py \
-    --scene_dir $SCENE_DIR \
-    --vda_repo  /work/courses/3dv/team22/Video-Depth-Anything-Internal \
-    --rgb_dir   $SCENE_DIR/rgb \
-    --out_dir   $SCENE_DIR/depth_vda
+N_DEPTH=$(ls $SCENE_DIR/depth_vda/*.png 2>/dev/null | wc -l)
+N_RGB=$(ls $SCENE_DIR/rgb/*.png 2>/dev/null | wc -l)
+if [ "$N_DEPTH" -eq "$N_RGB" ] && [ "$N_DEPTH" -gt 0 ]; then
+    echo "depth_vda already complete ($N_DEPTH frames), skipping"
+else
+    $PY generate_vda_streaming_maps.py \
+        --scene_dir $SCENE_DIR \
+        --vda_repo  /work/courses/3dv/team22/Video-Depth-Anything-Internal \
+        --rgb_dir   $SCENE_DIR/rgb \
+        --out_dir   $SCENE_DIR/depth_vda
+fi
 
 # ── 3. FoundationPose tightly coupled ───────────────────────────────────────
 echo ""
