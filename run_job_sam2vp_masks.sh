@@ -57,19 +57,50 @@ assert seed is not None, "No seed mask at masks/000000.png"
 duck_mask0 = (seed > 127).astype(bool)
 print(f"Seed mask: {int(duck_mask0.sum())} px, propagating {N} frames")
 
+CHUNK = 1000  # process in chunks to avoid OOM on long videos
 predictor = build_sam2_video_predictor(SAM2_CFG, SAM2_CKPT, device="cuda")
-with torch.inference_mode(), torch.autocast("cuda", dtype=torch.bfloat16):
-    state = predictor.init_state(video_path=JPG_DIR,
-                                  offload_video_to_cpu=True,
-                                  offload_state_to_cpu=True)
-    predictor.add_new_mask(state, frame_idx=0, obj_id=1, mask=duck_mask0)
-    for fi, obj_ids, mlogits in predictor.propagate_in_video(state):
-        m = (mlogits[0] > 0.0).cpu().numpy()
-        if m.ndim == 3: m = m[0]
-        m = binary_fill_holes(m).astype(np.uint8) * 255
-        name = os.path.splitext(os.path.basename(frame_files[fi]))[0]
-        cv2.imwrite(f"{OUT_DIR}/{name}.png", m)
-        if fi % 200 == 0: print(f"  frame {fi}/{N}")
+
+chunk_start = 0
+while chunk_start < N:
+    chunk_end = min(chunk_start + CHUNK, N)
+    chunk_jpgs = os.path.join(os.path.dirname(JPG_DIR), f"rgb_jpg_chunk")
+    os.makedirs(chunk_jpgs, exist_ok=True)
+    # Symlink/copy only chunk frames
+    for p in frame_files[chunk_start:chunk_end]:
+        dst = os.path.join(chunk_jpgs, os.path.splitext(os.path.basename(p))[0] + ".jpg")
+        src = os.path.join(JPG_DIR, os.path.splitext(os.path.basename(p))[0] + ".jpg")
+        if not os.path.exists(dst):
+            os.symlink(src, dst)
+
+    # Seed for this chunk: use last saved mask or original seed
+    if chunk_start == 0:
+        cur_seed = duck_mask0
+    else:
+        prev_name = os.path.splitext(os.path.basename(frame_files[chunk_start]))[0]
+        m_prev = cv2.imread(f"{OUT_DIR}/{prev_name}.png", cv2.IMREAD_GRAYSCALE)
+        cur_seed = (m_prev > 127).astype(bool) if m_prev is not None else duck_mask0
+
+    print(f"Chunk {chunk_start}-{chunk_end} seed: {int(cur_seed.sum())} px")
+    with torch.inference_mode(), torch.autocast("cuda", dtype=torch.bfloat16):
+        state = predictor.init_state(video_path=chunk_jpgs,
+                                      offload_video_to_cpu=True,
+                                      offload_state_to_cpu=True)
+        predictor.add_new_mask(state, frame_idx=0, obj_id=1, mask=cur_seed)
+        for fi, obj_ids, mlogits in predictor.propagate_in_video(state):
+            m = (mlogits[0] > 0.0).cpu().numpy()
+            if m.ndim == 3: m = m[0]
+            m = binary_fill_holes(m).astype(np.uint8) * 255
+            abs_fi = chunk_start + fi
+            name = os.path.splitext(os.path.basename(frame_files[abs_fi]))[0]
+            cv2.imwrite(f"{OUT_DIR}/{name}.png", m)
+        predictor.reset_state(state)
+        del state
+        torch.cuda.empty_cache()
+
+    # Clean chunk symlinks
+    import shutil; shutil.rmtree(chunk_jpgs)
+    chunk_start = chunk_end
+    print(f"  chunk done, total saved: {len(os.listdir(OUT_DIR))}")
 
 print(f"Done -> {OUT_DIR}")
 PYEOF
