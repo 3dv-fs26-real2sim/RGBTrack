@@ -18,23 +18,27 @@
 
 MAX_FRAMES=1200
 VIDEO=""; SCENE=""; CX=""; CY=""
+MESH=/work/courses/3dv/team22/foundationpose/data/object/duck/duck.obj  # default object
 while [[ $# -gt 0 ]]; do
     case $1 in
         --video)      VIDEO=$2;      shift 2 ;;
         --scene)      SCENE=$2;      shift 2 ;;
         --click_x)    CX=$2;         shift 2 ;;
         --click_y)    CY=$2;         shift 2 ;;
+        --mesh)       MESH=$2;       shift 2 ;;
         --max_frames) MAX_FRAMES=$2; shift 2 ;;
         *) echo "Unknown arg: $1"; exit 1 ;;
     esac
 done
 [ -z "$VIDEO" ] || [ -z "$SCENE" ] || [ -z "$CX" ] || [ -z "$CY" ] && \
-    echo "Usage: sbatch run_pipeline.sh --video <v> --scene <s> --click_x <x> --click_y <y>" && exit 1
+    echo "Usage: sbatch run_pipeline.sh --video <v> --scene <s> --click_x <x> --click_y <y> [--mesh <obj>] [--max_frames N]" && exit 1
 
-SCENE_DIR=/work/courses/3dv/team22/foundationpose/data/$SCENE
-MESH=/work/courses/3dv/team22/foundationpose/data/object/duck/duck.obj
-SCRATCH=/work/scratch/hudela
+# All outputs in one isolated run directory in scratch
+RUN_DIR=/work/scratch/hudela/$SCENE
+SCENE_DIR=$RUN_DIR                    # YcbineoatReader expects cam_K + rgb here
 PY=/work/courses/3dv/team22/py310_env/bin/python
+
+mkdir -p $RUN_DIR/rgb $RUN_DIR/masks $RUN_DIR/depth_vda $RUN_DIR/fp
 
 . /etc/profile.d/modules.sh
 module load cuda/12.8
@@ -68,7 +72,7 @@ for i in range(limit):
 cap.release()
 print(f'Extracted {limit} frames')
 "
-cp /work/courses/3dv/team22/foundationpose/data/20250804_104715/cam_K.txt $SCENE_DIR/cam_K.txt
+cp /work/courses/3dv/team22/foundationpose/data/20250804_104715/cam_K.txt $RUN_DIR/cam_K.txt
 
 # ── 2. Seed mask: SAM2VP click → dilated mask → BSD → CAD render ─────────────
 echo "[2/5] Generating seed mask (CAD-anchored)"
@@ -208,7 +212,7 @@ $PY run_demo_vda_hand.py \
     --test_scene_dir   $SCENE_DIR \
     --depth_dir        $SCENE_DIR/depth_vda \
     --masks_dir        $SCENE_DIR/masks \
-    --debug_dir        $SCRATCH/duck_fp_$SCENE \
+    --debug_dir        $RUN_DIR/fp \
     --est_refine_iter  2 \
     --track_refine_iter 2 \
     --debug 2
