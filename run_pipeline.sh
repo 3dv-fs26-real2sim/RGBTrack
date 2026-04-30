@@ -188,7 +188,7 @@ while chunk_start < N:
         src = f"{JPG_DIR}/" + os.path.splitext(os.path.basename(p))[0] + ".jpg"
         if not os.path.exists(dst): os.symlink(src, dst)
     cur_seed = duck_mask0 if chunk_start == 0 else \
-        (cv2.imread(f"{OUT_DIR}/" + os.path.splitext(os.path.basename(frame_files[chunk_start]))[0] + ".png",
+        (cv2.imread(f"{OUT_DIR}/" + os.path.splitext(os.path.basename(frame_files[chunk_start - 1]))[0] + ".png",
                     cv2.IMREAD_GRAYSCALE) > 127).astype(bool)
     with torch.inference_mode(), torch.autocast("cuda", dtype=torch.bfloat16):
         state = predictor.init_state(video_path=chunk_dir, offload_video_to_cpu=True, offload_state_to_cpu=True)
