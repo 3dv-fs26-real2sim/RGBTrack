@@ -1,5 +1,5 @@
 #!/bin/bash
-set -e   # stop on any error
+
 #SBATCH --account=3dv
 #SBATCH --time=12:00:00
 #SBATCH --output=/work/courses/3dv/team22/RGBTrack/logs/pipeline_%j.out
