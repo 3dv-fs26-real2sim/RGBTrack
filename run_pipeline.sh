@@ -1,4 +1,5 @@
 #!/bin/bash
+set -e   # stop on any error
 #SBATCH --account=3dv
 #SBATCH --time=12:00:00
 #SBATCH --output=/work/courses/3dv/team22/RGBTrack/logs/pipeline_%j.out
@@ -76,7 +77,7 @@ cp /work/courses/3dv/team22/foundationpose/data/20250804_104715/cam_K.txt $RUN_D
 
 # ── 2. Seed mask: SAM2VP click → dilated mask → BSD → CAD render ─────────────
 echo "[2/5] Generating seed mask (CAD-anchored)"
-SCENE=$SCENE CX=$CX CY=$CY \
+SCENE=$SCENE CX=$CX CY=$CY RUN_DIR=$RUN_DIR MESH_FILE=$MESH \
 $PY - <<'PYEOF'
 import cv2, os, glob, torch, numpy as np, trimesh
 from scipy.ndimage import binary_fill_holes
@@ -86,14 +87,12 @@ from datareader import *
 from tools import *
 set_seed(0); set_logging_format()
 
-DATA  = "/work/courses/3dv/team22/foundationpose/data"
-MESH  = "/work/courses/3dv/team22/foundationpose/data/object/duck/duck.obj"
 SAM2_CKPT = "/work/courses/3dv/team22/RGBTrack/segment-anything-2-real-time/sam2.1_hiera_small.pt"
 SAM2_CFG  = "configs/sam2.1/sam2.1_hiera_s.yaml"
 
-scene  = os.environ["SCENE"]
-cx, cy = int(os.environ["CX"]), int(os.environ["CY"])
-SCENE_DIR = f"{DATA}/{scene}"
+cx, cy    = int(os.environ["CX"]), int(os.environ["CY"])
+SCENE_DIR = os.environ["RUN_DIR"]
+MESH_PATH = os.environ["MESH_FILE"]
 seed_path = f"{SCENE_DIR}/masks/000000.png"
 JPG_DIR   = f"{SCENE_DIR}/seed_jpg"
 os.makedirs(JPG_DIR, exist_ok=True)
@@ -124,16 +123,32 @@ dil_k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (61, 61))
 dilated = cv2.dilate(sam_mask.astype(np.uint8) * 255, dil_k) > 127
 
 # BSD + nvdiffrast render
-mesh = trimesh.load(MESH); mesh.apply_scale(0.001)
-scorer = ScorePredictor(); refiner = PoseRefinePredictor(); glctx = dr.RasterizeCudaContext()
+mesh = trimesh.load(MESH_PATH); mesh.apply_scale(0.001)
+scorer = ScorePredictor(); refiner = PoseRefinePredictor()
+try:
+    glctx = dr.RasterizeCudaContext()
+    use_rast = True
+except Exception as e:
+    print(f"nvdiffrast unavailable ({e}), using convex hull fallback")
+    glctx = None; use_rast = False
+
 est = FoundationPose(model_pts=mesh.vertices, model_normals=mesh.vertex_normals,
                      mesh=mesh, scorer=scorer, refiner=refiner, debug=0, debug_dir="/tmp", glctx=glctx)
 reader = YcbineoatReader(video_dir=SCENE_DIR, shorter_side=None, zfar=np.inf)
 pose = binary_search_depth(est, mesh, rgb0, dilated, reader.K, debug=False)
 print(f"BSD Z={pose[2,3]:.3f}m")
-_, _, mask_r = est.render_rgbd(mesh, pose[None], reader.K, w, h)
-mask_np = mask_r[0].cpu().numpy() if mask_r.ndim == 3 else mask_r.cpu().numpy()
-cad_u8 = (mask_np > 0.5).astype(np.uint8) * 255
+if use_rast:
+    _, _, mask_r = est.render_rgbd(mesh, pose[None], reader.K, w, h)
+    mask_np = mask_r[0].cpu().numpy() if mask_r.ndim == 3 else mask_r.cpu().numpy()
+    cad_u8 = (mask_np > 0.5).astype(np.uint8) * 255
+else:
+    verts = np.array(mesh.vertices)
+    verts_cam = (pose @ np.hstack([verts, np.ones((len(verts),1))]).T).T[:,:3]
+    proj = (reader.K @ verts_cam.T).T
+    proj = proj[:,:2] / proj[:,2:3]
+    hull = cv2.convexHull(np.int32(proj).reshape(-1,1,2))
+    cad_u8 = np.zeros((h, w), dtype=np.uint8)
+    cv2.fillPoly(cad_u8, [hull], 255)
 cv2.imwrite(seed_path, cad_u8)
 print(f"CAD seed saved: {int((cad_u8>127).sum())} px → {seed_path}")
 PYEOF
