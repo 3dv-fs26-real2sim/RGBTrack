@@ -201,16 +201,15 @@ else
         --out_dir   $SCENE_DIR/depth_vda
 fi
 
-# ── 5. FoundationPose++ tightly coupled (ScoreNet disabled, BSD depth correction)
+# ── 5. FoundationPose++ (run_demo_vda_hand — same as duck_vda_palm_rot, no ScoreNet)
 echo "[5/5] FoundationPose++ tracking"
-$PY run_demo_tightly_coupled.py \
+$PY run_demo_vda_hand.py \
     --mesh_file        $MESH \
     --test_scene_dir   $SCENE_DIR \
-    --rgb_dir          $SCENE_DIR/rgb \
     --depth_dir        $SCENE_DIR/depth_vda \
     --masks_dir        $SCENE_DIR/masks \
     --debug_dir        $SCRATCH/duck_fp_$SCENE \
-    --est_refine_iter  5 \
+    --est_refine_iter  2 \
     --track_refine_iter 2 \
     --debug 2
 
