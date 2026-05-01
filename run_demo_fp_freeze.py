@@ -185,8 +185,11 @@ if __name__ == "__main__":
                 occ_streak += 1
                 # If we've been occluded for a while AND translation has barely
                 # moved, the tracker is stuck — force BSD on whatever mask is
-                # there. Mask must be non-empty for BSD to do anything useful.
-                if occ_streak >= STUCK_OCC_FRAMES and mask.any():
+                # there. Only fires once per occlusion period: if duck is still
+                # not moving and still occluded after, don't BSD again.
+                if (not stuck_reinit_done
+                        and occ_streak >= STUCK_OCC_FRAMES
+                        and mask.any()):
                     tr_arr = np.stack(list(tr_history))
                     tr_range = float(np.linalg.norm(tr_arr.max(0) - tr_arr.min(0)))
                     if tr_range < STUCK_TR_RANGE_M:
@@ -196,10 +199,10 @@ if __name__ == "__main__":
                                                    mask.astype(bool), reader.K, debug=False)
                         last_good_R = pose[:3, :3].copy()
                         n_stuck_reinit += 1
-                        occ_streak = 0
-                        tr_history.clear()
+                        stuck_reinit_done = True
             else:
                 occ_streak = 0
+                stuck_reinit_done = False
                 if was_occluded and mask_area >= RECOVERY_THR * frame0_area:
                     logging.info(f"[frame {i}] Recovery re-init")
                     pose = binary_search_depth(est, mesh, color, mask.astype(bool),
