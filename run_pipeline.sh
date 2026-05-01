@@ -5,34 +5,45 @@
 #SBATCH --output=/work/courses/3dv/team22/RGBTrack/logs/pipeline_%j.out
 #SBATCH --error=/work/courses/3dv/team22/RGBTrack/logs/pipeline_%j.err
 
-# Full pipeline: video → frames → seed mask (CAD) → SAM2VP masks → VDA depth → FP++
+# Modular pipeline: 1=frames  2=seed_mask  3=mask_propagation  4=depth  5=fp
 #
 # Usage:
-#   sbatch run_pipeline.sh --video <path> --scene <name> --click_x <x> --click_y <y>
-#   Optional: --max_frames 1200 (default)
+#   sbatch run_pipeline.sh --scene <name> [--steps 1,2,3,4,5]
+#                          [--video <path> --click_x <x> --click_y <y>]
+#                          [--mesh <obj>] [--max_frames N] [--fp_debug_dir <name>]
 #
-# Example:
-#   sbatch run_pipeline.sh \
-#     --video  /work/courses/3dv/team22/RGBTrack/NEWVIDS/duck/20250804_113654.mp4 \
-#     --scene  20250804_113654 \
+# --steps defaults to all (1,2,3,4,5). Pass any subset to run only those stages.
+#   step 1 needs --video; step 2 needs --click_x/--click_y; step 5 writes to fp/ unless
+#   --fp_debug_dir is given (useful to A/B compare e.g. fp vs fp_tex).
+#
+# Example — full run:
+#   sbatch run_pipeline.sh --video .../20250804_113654.mp4 --scene 20250804_113654 \
 #     --click_x 345 --click_y 278
+# Example — FP only on already-prepped scene, separate output:
+#   sbatch run_pipeline.sh --scene 20250804_124203 --steps 5 --fp_debug_dir fp_tex
 
 MAX_FRAMES=1200
 VIDEO=""; SCENE=""; CX=""; CY=""
+STEPS="1,2,3,4,5"
+FP_DEBUG_DIR="fp"
 MESH=/work/courses/3dv/team22/foundationpose/data/object/duck/duck.obj  # default object
 while [[ $# -gt 0 ]]; do
     case $1 in
-        --video)      VIDEO=$2;      shift 2 ;;
-        --scene)      SCENE=$2;      shift 2 ;;
-        --click_x)    CX=$2;         shift 2 ;;
-        --click_y)    CY=$2;         shift 2 ;;
-        --mesh)       MESH=$2;       shift 2 ;;
-        --max_frames) MAX_FRAMES=$2; shift 2 ;;
+        --video)         VIDEO=$2;         shift 2 ;;
+        --scene)         SCENE=$2;         shift 2 ;;
+        --click_x)       CX=$2;            shift 2 ;;
+        --click_y)       CY=$2;            shift 2 ;;
+        --mesh)          MESH=$2;          shift 2 ;;
+        --max_frames)    MAX_FRAMES=$2;    shift 2 ;;
+        --steps)         STEPS=$2;         shift 2 ;;
+        --fp_debug_dir)  FP_DEBUG_DIR=$2;  shift 2 ;;
         *) echo "Unknown arg: $1"; exit 1 ;;
     esac
 done
-[ -z "$VIDEO" ] || [ -z "$SCENE" ] || [ -z "$CX" ] || [ -z "$CY" ] && \
-    echo "Usage: sbatch run_pipeline.sh --video <v> --scene <s> --click_x <x> --click_y <y> [--mesh <obj>] [--max_frames N]" && exit 1
+[ -z "$SCENE" ] && \
+    echo "Usage: sbatch run_pipeline.sh --scene <s> [--steps 1,2,3,4,5] [--video <v> --click_x <x> --click_y <y>] [--mesh <obj>] [--max_frames N] [--fp_debug_dir <name>]" && exit 1
+
+run_step() { [[ ",$STEPS," == *",$1,"* ]]; }
 
 # All outputs in one isolated run directory in scratch
 RUN_DIR=/work/scratch/hudela/$SCENE
@@ -55,12 +66,19 @@ cd /work/courses/3dv/team22/RGBTrack
 mkdir -p logs $SCENE_DIR/rgb $SCENE_DIR/masks
 
 echo "=================================================="
-echo " PIPELINE  scene=$SCENE  max_frames=$MAX_FRAMES"
+echo " PIPELINE  scene=$SCENE  steps=$STEPS  max_frames=$MAX_FRAMES"
 echo "=================================================="
 
 # ── 1. Extract frames (up to MAX_FRAMES) ────────────────────────────────────
-echo "[1/5] Extracting frames → $SCENE_DIR/rgb"
-$PY -c "
+if ! run_step 1; then
+    echo "[1/5] skipped (not in --steps)"
+else
+N_RGB=$(ls $SCENE_DIR/rgb/*.png 2>/dev/null | wc -l)
+if [ "$N_RGB" -gt 0 ]; then
+    echo "[1/5] frames already extracted ($N_RGB), skipping"
+else
+    echo "[1/5] Extracting frames → $SCENE_DIR/rgb"
+    $PY -c "
 import cv2, os
 cap = cv2.VideoCapture('$VIDEO')
 total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
@@ -73,9 +91,16 @@ for i in range(limit):
 cap.release()
 print(f'Extracted {limit} frames')
 "
-cp /work/courses/3dv/team22/foundationpose/data/20250804_104715/cam_K.txt $RUN_DIR/cam_K.txt
+fi
+fi
+[ -f $RUN_DIR/cam_K.txt ] || cp /work/courses/3dv/team22/foundationpose/data/20250804_104715/cam_K.txt $RUN_DIR/cam_K.txt
 
 # ── 2. Seed mask: SAM2VP click → dilated mask → BSD → CAD render ─────────────
+if ! run_step 2; then
+    echo "[2/5] skipped (not in --steps)"
+elif [ -f $SCENE_DIR/masks/000000.png ]; then
+    echo "[2/5] seed mask already exists, skipping"
+else
 echo "[2/5] Generating seed mask (CAD-anchored)"
 SCENE=$SCENE CX=$CX CY=$CY RUN_DIR=$RUN_DIR MESH_FILE=$MESH \
 $PY - <<'PYEOF'
@@ -152,8 +177,17 @@ else:
 cv2.imwrite(seed_path, cad_u8)
 print(f"CAD seed saved: {int((cad_u8>127).sum())} px → {seed_path}")
 PYEOF
+fi
 
 # ── 3. SAM2VP mask propagation (chunked) ────────────────────────────────────
+if ! run_step 3; then
+    echo "[3/5] skipped (not in --steps)"
+else
+N_MASKS=$(ls $SCENE_DIR/masks/*.png 2>/dev/null | wc -l)
+N_RGB=$(ls $SCENE_DIR/rgb/*.png 2>/dev/null | wc -l)
+if [ "$N_MASKS" -ge "$N_RGB" ] && [ "$N_MASKS" -gt 1 ]; then
+    echo "[3/5] masks already complete ($N_MASKS), skipping"
+else
 echo "[3/5] SAM2VP mask propagation"
 $PY - <<PYEOF
 import glob, os, torch, cv2, shutil
@@ -205,8 +239,13 @@ while chunk_start < N:
     print(f"  chunk done, total: {len(os.listdir(OUT_DIR))}")
 print(f"Masks done -> {OUT_DIR}")
 PYEOF
+fi
+fi
 
 # ── 4. VDA depth estimation ──────────────────────────────────────────────────
+if ! run_step 4; then
+    echo "[4/5] skipped (not in --steps)"
+else
 echo "[4/5] VDA depth estimation"
 N_DEPTH=$(ls $SCENE_DIR/depth_vda/*.png 2>/dev/null | wc -l)
 N_RGB=$(ls $SCENE_DIR/rgb/*.png 2>/dev/null | wc -l)
@@ -219,18 +258,23 @@ else
         --rgb_dir   $SCENE_DIR/rgb \
         --out_dir   $SCENE_DIR/depth_vda
 fi
+fi
 
 # ── 5. FoundationPose++ (run_demo_vda_hand — same as duck_vda_palm_rot, no ScoreNet)
-echo "[5/5] FoundationPose++ tracking"
+if ! run_step 5; then
+    echo "[5/5] skipped (not in --steps)"
+else
+echo "[5/5] FoundationPose++ tracking → $RUN_DIR/$FP_DEBUG_DIR"
 $PY run_demo_vda_hand.py \
     --mesh_file        $MESH \
     --test_scene_dir   $SCENE_DIR \
     --depth_dir        $SCENE_DIR/depth_vda \
     --masks_dir        $SCENE_DIR/masks \
-    --debug_dir        $RUN_DIR/fp \
+    --debug_dir        $RUN_DIR/$FP_DEBUG_DIR \
     --est_refine_iter  2 \
     --track_refine_iter 2 \
     --debug 2
+fi
 
 echo "=================================================="
 echo " PIPELINE DONE — scene=$SCENE"
