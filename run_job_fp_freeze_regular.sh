@@ -27,7 +27,7 @@ mkdir -p logs $OUT_DIR
 /work/courses/3dv/team22/py310_env/bin/python run_demo_fp_freeze.py \
     --mesh_file       /work/courses/3dv/team22/foundationpose/data/object/duck/duck.obj \
     --test_scene_dir  $SCENE_DIR \
-    --depth_dir       $SCENE_DIR/depth_vda \
+    --depth_dir       $SCENE_DIR/depth_pro \
     --masks_dir       $SCENE_DIR/masks \
     --debug_dir       $OUT_DIR \
     --est_refine_iter 2 \
