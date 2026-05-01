@@ -35,6 +35,7 @@ RECOVERY_THR       = 0.95   # mask above this fraction of frame0 → re-init
 SCORE_DROP_MARGIN  = 0.35   # reject rotation if score < baseline * (1 - margin)
 STUCK_OCC_FRAMES   = 30     # occluded streak length to consider re-anchoring
 STUCK_TR_RANGE_M   = 0.005  # if translation range over last STUCK_OCC_FRAMES < 5mm → stuck
+HAND_CLOSE_PX      = 120    # hand-duck centroid distance threshold (px)
 LOG_INTERVAL       = 5
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -60,6 +61,9 @@ if __name__ == "__main__":
     parser.add_argument("--debug",            type=int, default=2)
     parser.add_argument("--debug_dir",        type=str, default=f"{code_dir}/debug")
     parser.add_argument("--masks_dir",        type=str, default=None)
+    parser.add_argument("--hand_masks_dir",   type=str, default=None,
+                        help="Optional. If set, freeze rotation when duck is occluded and "
+                             "hand mask centroid is within HAND_CLOSE_PX of duck centroid.")
     parser.add_argument("--depth_dir",        type=str, default=None)
     parser.add_argument("--depth_dir_occ",    type=str, default=None)
     parser.add_argument("--metric3d_ckpt",    type=str, default=None)
@@ -128,6 +132,17 @@ if __name__ == "__main__":
         mask = (mask > 127).astype(np.uint8)
         mask_area = float(mask.sum())
 
+        hand_close = False
+        if args.hand_masks_dir is not None and mask.any():
+            hp = os.path.join(args.hand_masks_dir, f"{id_str}.png")
+            hm = cv2.imread(hp, cv2.IMREAD_GRAYSCALE)
+            if hm is not None and (hm > 127).any():
+                hys, hxs = np.where(hm > 127)
+                dys, dxs = np.where(mask > 0)
+                d_cx, d_cy = dxs.mean(), dys.mean()
+                h_cx, h_cy = hxs.mean(), hys.mean()
+                hand_close = float(np.hypot(d_cx - h_cx, d_cy - h_cy)) < HAND_CLOSE_PX
+
         if i == 0:
             pose = binary_search_depth(est, mesh, color, mask.astype(bool), reader.K, debug=True)
             logging.info(f"Initial pose:\n{pose}")
@@ -168,13 +183,15 @@ if __name__ == "__main__":
             pose = est.track_one(rgb=color, depth=d_scaled, K=reader.K,
                                  iteration=args.track_refine_iter)
 
-            # ScoreNet rotation gate: if FP's new pose scores too low, the
-            # rotation is suspect — keep last_good_R, accept translation.
+            # ScoreNet rotation gate, plus hand-proximity gate when occluded:
+            # rotation is rejected and last_good_R held when either trips.
             score = score_pose(est, color, d_scaled, reader.K)
-            if score < baseline_score * (1.0 - SCORE_DROP_MARGIN) and last_good_R is not None:
+            score_low = score < baseline_score * (1.0 - SCORE_DROP_MARGIN)
+            hand_freeze = occluded and hand_close
+            if (score_low or hand_freeze) and last_good_R is not None:
                 pose[:3, :3] = last_good_R
                 n_frozen += 1
-                tag = "FROZEN"
+                tag = "FROZEN_HAND" if hand_freeze and not score_low else "FROZEN"
             else:
                 last_good_R = pose[:3, :3].copy()
                 tag = "OK"
@@ -226,7 +243,7 @@ if __name__ == "__main__":
             center_pose = pose @ np.linalg.inv(to_origin)
             color = cv2.putText(color, f"fps {int(1/(t2-t1))} {tag} f{n_frozen}",
                                 (10,30), cv2.FONT_HERSHEY_SIMPLEX, 0.8,
-                                (0,0,255) if tag=="FROZEN" else (255,0,0), 2)
+                                (0,0,255) if tag.startswith("FROZEN") else (255,0,0), 2)
             vis = draw_posed_3d_box(reader.K, img=color, ob_in_cam=center_pose, bbox=bbox)
             vis = draw_xyz_axis(color, ob_in_cam=center_pose, scale=0.1, K=reader.K,
                                 thickness=3, transparency=0, is_input_rgb=True)
