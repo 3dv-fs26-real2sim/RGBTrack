@@ -161,23 +161,9 @@ if __name__ == "__main__":
                        (mask_area < OCCLUSION_THR * frame0_area)
             d_scaled = (depth_occ * depth_scale_occ) if occluded else (depth * depth_scale)
 
-            # Translation correction — snap XY to mask centroid before FP
-            if not occluded and mask.any():
-                vs, us = np.where(mask > 0)
-                uc = float((us.min() + us.max()) / 2.0)
-                vc = float((vs.min() + vs.max()) / 2.0)
-                K  = reader.K
-                pl = est.pose_last if est.pose_last.dim() == 2 else est.pose_last[0]
-                tz = float(pl[2, 3])
-                if tz > 0.01:
-                    tx = (uc - K[0,2]) * tz / K[0,0]
-                    ty = (vc - K[1,2]) * tz / K[1,1]
-                    est.pose_last = est.pose_last.clone()
-                    if est.pose_last.dim() == 3:
-                        est.pose_last[0,0,3] = tx; est.pose_last[0,1,3] = ty
-                    else:
-                        est.pose_last[0,3] = tx; est.pose_last[1,3] = ty
-
+            # No centroid snap — it suppresses real translation jumps and
+            # biases FP toward the hat when duck is placed, both of which
+            # break the anomaly detector. tc_rot_freeze ran fine without it.
             T_raw = est.track_one(rgb=color, depth=d_scaled, K=reader.K,
                                    iteration=args.track_refine_iter)
 
@@ -191,14 +177,16 @@ if __name__ == "__main__":
                 rt_jump   = rotation_angle_deg(R_delta)
                 kine_anom = (tr_jump > TR_THRESH_M) or (rt_jump > ROT_THRESH_DEG)
 
-            area_drop = (last_good_area is not None) and \
-                        (mask_area < AREA_DROP_RATIO * last_good_area)
+            # Benchmark area against frame0 (true "fully visible" baseline),
+            # not last_good_area (which drifts with hat/in-hand artifacts).
+            area_drop = (frame0_area is not None) and \
+                        (mask_area < AREA_DROP_RATIO * frame0_area)
             anomaly   = kine_anom and area_drop
 
             if anomaly:
                 n_anom += 1
                 logging.info(f"[frame {i}] ANOMALY  Δt={tr_jump*100:.1f}cm  "
-                             f"Δθ={rt_jump:.1f}°  area={mask_area/max(last_good_area,1):.2f}")
+                             f"Δθ={rt_jump:.1f}°  area={mask_area/max(frame0_area,1):.2f}")
                 tag  = "ANOM"
                 pose = T_raw.copy()
                 if last_good_R is not None:
