@@ -260,16 +260,16 @@ else
 fi
 fi
 
-# ── 5. FoundationPose++ (run_demo_vda_hand — same as duck_vda_palm_rot, no ScoreNet)
+# ── 5. FoundationPose tracking — run_demo_bsd_raw_depth (BSD init + raw VDA depth,
+#       same code that produced duck_bsd_raw on 2025-04-14 18:14)
 if ! run_step 5; then
     echo "[5/5] skipped (not in --steps)"
 else
-echo "[5/5] FoundationPose++ tracking → $RUN_DIR/$FP_DEBUG_DIR"
-$PY run_demo_vda_hand.py \
+echo "[5/5] FoundationPose tracking → $RUN_DIR/$FP_DEBUG_DIR"
+$PY run_demo_bsd_raw_depth.py \
     --mesh_file        $MESH \
     --test_scene_dir   $SCENE_DIR \
-    --depth_dir        $SCENE_DIR/depth_vda \
-    --masks_dir        $SCENE_DIR/masks \
+    --pred_depth_dir   $SCENE_DIR/depth_vda \
     --debug_dir        $RUN_DIR/$FP_DEBUG_DIR \
     --est_refine_iter  2 \
     --track_refine_iter 2 \
