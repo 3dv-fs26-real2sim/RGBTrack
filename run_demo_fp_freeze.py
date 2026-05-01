@@ -1,19 +1,12 @@
 """
-FoundationPose tracker — VDA depth pipeline + anomaly-freeze rotation.
-
-Combines:
-  - run_demo_vda_hand.py   : VDA depth, depth scaling, occlusion recovery,
-                             translation correction, depth_pro/metric3d support
-  - run_demo_tightly_coupled.py @0247609 : velocity-based anomaly detection,
-                             freeze rotation on anomaly (keep translation from FP)
+FoundationPose tracker — VDA depth pipeline + ScoreNet rotation gate.
 
 On every frame:
-  1. FP track_one → T_raw
-  2. Predict T_pred from 5-frame velocity buffer
-  3. Kinematic anomaly = large Δt or Δθ AND mask area dropped
-  4. Anomaly → pose = T_raw but R = last_good_R  (translation trusted, rotation frozen)
-  5. Healthy  → pose = T_raw, update last_good_R and velocity buffer
-  6. Occlusion recovery re-init via binary_search_depth when mask recovers
+  1. Translation correction → snap pose_last.xy to mask centroid
+  2. FP track_one → T_raw (translation trusted)
+  3. ScoreNet on T_raw. If score < baseline*(1-SCORE_DROP_MARGIN),
+     reject the rotation update and keep last_good_R; translation stays.
+  4. Occlusion recovery re-init via binary_search_depth when mask recovers
 """
 import argparse, os, time
 from collections import deque
@@ -36,34 +29,25 @@ try:
 except ImportError:
     DepthProWrapper = None
 
-# ── Anomaly thresholds ────────────────────────────────────────────────────────
-TR_THRESH_M      = 0.05   # 5 cm/frame translation jump
-ROT_THRESH_DEG   = 5.0    # 5°/frame rotation jump
-AREA_DROP_RATIO  = 0.80   # mask area < 80% of last-good → visual degradation
-HIST_LEN         = 5      # velocity buffer length
-OCCLUSION_THR    = 0.90   # duck mask below this → occluded
-RECOVERY_THR     = 0.95   # duck mask above this → re-init after occlusion
-LOG_INTERVAL     = 5
+# ── Settings ──────────────────────────────────────────────────────────────────
+OCCLUSION_THR      = 0.90   # mask below this fraction of frame0 → occluded
+RECOVERY_THR       = 0.95   # mask above this fraction of frame0 → re-init
+SCORE_DROP_MARGIN  = 0.35   # reject rotation if score < baseline * (1 - margin)
+STUCK_OCC_FRAMES   = 30     # occluded streak length to consider re-anchoring
+STUCK_TR_RANGE_M   = 0.005  # if translation range over last STUCK_OCC_FRAMES < 5mm → stuck
+LOG_INTERVAL       = 5
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def rotation_angle_deg(R: np.ndarray) -> float:
-    c = (np.trace(R) - 1.0) / 2.0
-    return float(np.degrees(np.arccos(np.clip(c, -1.0, 1.0))))
-
-
-def predict_pose(history: deque, frozen_velocity):
-    if len(history) < 2:
-        return None, None
-    poses = list(history)
-    if frozen_velocity is not None:
-        v = frozen_velocity
-    else:
-        deltas = [poses[k+1][:3,3] - poses[k][:3,3] for k in range(len(poses)-1)]
-        v = np.mean(np.stack(deltas), axis=0)
-    T_pred = poses[-1].copy()
-    T_pred[:3, 3] = poses[-1][:3, 3] + v
-    return T_pred, v
+def score_pose(est, rgb, depth, K):
+    pose_np = est.pose_last.cpu().numpy().reshape(1, 4, 4)
+    scores, _ = est.scorer.predict(
+        mesh=est.mesh, rgb=rgb, depth=depth, K=K,
+        ob_in_cams=pose_np, normal_map=None,
+        mesh_tensors=est.mesh_tensors, glctx=est.glctx,
+        mesh_diameter=est.diameter, get_vis=False,
+    )
+    return float(scores[0])
 
 
 if __name__ == "__main__":
@@ -116,16 +100,18 @@ if __name__ == "__main__":
                           cv2.IMREAD_UNCHANGED).astype(np.float32) / 1000.0
 
     # State
-    history         = deque(maxlen=HIST_LEN)
     depth_scale     = 1.0
     depth_scale_occ = 1.0
     pose            = None
     last_good_R     = None
-    last_good_area  = None
-    frozen_velocity = None
+    baseline_score  = None
     frame0_area     = None
     was_occluded    = False
-    n_anom          = 0
+    occ_streak       = 0
+    tr_history       = deque(maxlen=STUCK_OCC_FRAMES)  # recent translations
+    stuck_reinit_done = False  # already re-anchored this occlusion period
+    n_frozen         = 0
+    n_stuck_reinit   = 0
 
     for i in range(len(reader.color_files)):
         color = reader.get_color(i)
@@ -153,80 +139,94 @@ if __name__ == "__main__":
             depth_scale_occ = bsd_z / occ_z if occ_z > 0 else 1.0
             logging.info(f"Depth scale: {depth_scale:.3f}  (occ): {depth_scale_occ:.3f}")
             frame0_area    = mask_area
-            last_good_area = mask_area
             last_good_R    = pose[:3, :3].copy()
+            baseline_score = score_pose(est, color, depth * depth_scale, reader.K)
+            logging.info(f"Baseline ScoreNet: {baseline_score:.4f}")
             tag = "INIT"
         else:
             occluded = (frame0_area is not None) and \
                        (mask_area < OCCLUSION_THR * frame0_area)
             d_scaled = (depth_occ * depth_scale_occ) if occluded else (depth * depth_scale)
 
-            # No centroid snap — it suppresses real translation jumps and
-            # biases FP toward the hat when duck is placed, both of which
-            # break the anomaly detector. tc_rot_freeze ran fine without it.
-            T_raw = est.track_one(rgb=color, depth=d_scaled, K=reader.K,
-                                   iteration=args.track_refine_iter)
+            # Translation correction — snap XY to mask centroid before FP
+            if not occluded and mask.any():
+                vs, us = np.where(mask > 0)
+                uc = float((us.min() + us.max()) / 2.0)
+                vc = float((vs.min() + vs.max()) / 2.0)
+                K  = reader.K
+                pl = est.pose_last if est.pose_last.dim() == 2 else est.pose_last[0]
+                tz = float(pl[2, 3])
+                if tz > 0.01:
+                    tx = (uc - K[0,2]) * tz / K[0,0]
+                    ty = (vc - K[1,2]) * tz / K[1,1]
+                    est.pose_last = est.pose_last.clone()
+                    if est.pose_last.dim() == 3:
+                        est.pose_last[0,0,3] = tx; est.pose_last[0,1,3] = ty
+                    else:
+                        est.pose_last[0,3] = tx; est.pose_last[1,3] = ty
 
-            # Anomaly detection: kinematic jump + area drop
-            T_pred, v_used = predict_pose(history, frozen_velocity)
-            tr_jump = rt_jump = 0.0
-            kine_anom = False
-            if T_pred is not None:
-                tr_jump   = float(np.linalg.norm(T_raw[:3,3] - T_pred[:3,3]))
-                R_delta   = T_raw[:3,:3] @ T_pred[:3,:3].T
-                rt_jump   = rotation_angle_deg(R_delta)
-                kine_anom = (tr_jump > TR_THRESH_M) or (rt_jump > ROT_THRESH_DEG)
+            pose = est.track_one(rgb=color, depth=d_scaled, K=reader.K,
+                                 iteration=args.track_refine_iter)
 
-            # Benchmark area against frame0 (true "fully visible" baseline),
-            # not last_good_area (which drifts with hat/in-hand artifacts).
-            area_drop = (frame0_area is not None) and \
-                        (mask_area < AREA_DROP_RATIO * frame0_area)
-            anomaly   = kine_anom and area_drop
-
-            if anomaly:
-                n_anom += 1
-                logging.info(f"[frame {i}] ANOMALY  Δt={tr_jump*100:.1f}cm  "
-                             f"Δθ={rt_jump:.1f}°  area={mask_area/max(frame0_area,1):.2f}")
-                tag  = "ANOM"
-                pose = T_raw.copy()
-                if last_good_R is not None:
-                    pose[:3, :3] = last_good_R   # freeze rotation
+            # ScoreNet rotation gate: if FP's new pose scores too low, the
+            # rotation is suspect — keep last_good_R, accept translation.
+            score = score_pose(est, color, d_scaled, reader.K)
+            if score < baseline_score * (1.0 - SCORE_DROP_MARGIN) and last_good_R is not None:
+                pose[:3, :3] = last_good_R
+                n_frozen += 1
+                tag = "FROZEN"
             else:
-                frozen_velocity = None
-                last_good_area  = mask_area
-                last_good_R     = T_raw[:3, :3].copy()
-                tag  = "OK" if not kine_anom else "FAST"
-                pose = T_raw
+                last_good_R = pose[:3, :3].copy()
+                tag = "OK"
 
-            # Occlusion recovery re-init
+            # Occlusion bookkeeping + stuck-while-occluded re-init
             if occluded:
                 was_occluded = True
-            elif was_occluded and mask_area >= RECOVERY_THR * frame0_area:
-                logging.info(f"[frame {i}] Recovery re-init")
-                pose = binary_search_depth(est, mesh, color, mask.astype(bool),
-                                           reader.K, debug=False)
-                last_good_R = pose[:3, :3].copy()
-                was_occluded = False
+                occ_streak += 1
+                # If we've been occluded for a while AND translation has barely
+                # moved, the tracker is stuck — force BSD on whatever mask is
+                # there. Mask must be non-empty for BSD to do anything useful.
+                if occ_streak >= STUCK_OCC_FRAMES and mask.any():
+                    tr_arr = np.stack(list(tr_history))
+                    tr_range = float(np.linalg.norm(tr_arr.max(0) - tr_arr.min(0)))
+                    if tr_range < STUCK_TR_RANGE_M:
+                        logging.info(f"[frame {i}] Stuck-occluded re-init "
+                                     f"(streak={occ_streak}, tr_range={tr_range*1000:.1f}mm)")
+                        pose = binary_search_depth(est, mesh, color,
+                                                   mask.astype(bool), reader.K, debug=False)
+                        last_good_R = pose[:3, :3].copy()
+                        n_stuck_reinit += 1
+                        occ_streak = 0
+                        tr_history.clear()
+            else:
+                occ_streak = 0
+                if was_occluded and mask_area >= RECOVERY_THR * frame0_area:
+                    logging.info(f"[frame {i}] Recovery re-init")
+                    pose = binary_search_depth(est, mesh, color, mask.astype(bool),
+                                               reader.K, debug=False)
+                    last_good_R = pose[:3, :3].copy()
+                    baseline_score = max(baseline_score,
+                                         score_pose(est, color, d_scaled, reader.K))
+                    was_occluded = False
 
-        # Only push healthy frames to velocity buffer
-        if i == 0 or tag in ("OK", "FAST"):
-            history.append(pose.copy())
+        tr_history.append(pose[:3, 3].copy())
 
         if i % LOG_INTERVAL == 0:
-            logging.info(f"[frame {i}] {tag}  anomalies_so_far={n_anom}")
+            score_str = f"{score:.3f}" if i > 0 else f"{baseline_score:.3f}"
+            logging.info(f"[frame {i}] {tag}  score={score_str}  "
+                         f"frozen={n_frozen}  stuck_reinit={n_stuck_reinit}")
 
         t2 = time.time()
         np.savetxt(f"{debug_dir}/ob_in_cam/{id_str}.txt", pose.reshape(4,4))
 
         if args.debug >= 1:
             center_pose = pose @ np.linalg.inv(to_origin)
-            color = cv2.putText(color, f"fps {int(1/(t2-t1))} {tag} a{n_anom}",
+            color = cv2.putText(color, f"fps {int(1/(t2-t1))} {tag} f{n_frozen}",
                                 (10,30), cv2.FONT_HERSHEY_SIMPLEX, 0.8,
-                                (0,0,255) if tag=="ANOM" else (255,0,0), 2)
+                                (0,0,255) if tag=="FROZEN" else (255,0,0), 2)
             vis = draw_posed_3d_box(reader.K, img=color, ob_in_cam=center_pose, bbox=bbox)
             vis = draw_xyz_axis(color, ob_in_cam=center_pose, scale=0.1, K=reader.K,
                                 thickness=3, transparency=0, is_input_rgb=True)
         if args.debug >= 2:
             imageio.imwrite(f"{debug_dir}/track_vis/{id_str}.png", vis)
 
-    logging.info(f"Total anomalies: {n_anom}/{len(reader.color_files)-1}")
