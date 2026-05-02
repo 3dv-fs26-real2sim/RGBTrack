@@ -260,16 +260,67 @@ else
 fi
 fi
 
-# ── 5. FoundationPose tracking — run_demo_bsd_raw_depth (BSD init + raw VDA depth,
-#       same code that produced duck_bsd_raw on 2025-04-14 18:14)
+# ── 5. FoundationPose tracking — run_demo_bsd_raw_depth (BSD init + raw depth,
+#       same recipe that produced duck_bsd_raw). VDA depth is metric in unit but
+#       its absolute scale is per-scene off, so we calibrate via BSD on frame 0
+#       (depth_scale = bsd_z / vda_mean_in_mask) and write depth_vda_scaled/.
 if ! run_step 5; then
     echo "[5/5] skipped (not in --steps)"
 else
-echo "[5/5] FoundationPose tracking → $RUN_DIR/$FP_DEBUG_DIR"
+SCALED_DIR=$SCENE_DIR/depth_vda_scaled
+N_SCALED=$(ls $SCALED_DIR/*.png 2>/dev/null | wc -l)
+N_RGB=$(ls $SCENE_DIR/rgb/*.png 2>/dev/null | wc -l)
+if [ "$N_SCALED" -eq "$N_RGB" ] && [ "$N_SCALED" -gt 0 ]; then
+    echo "[5a/5] depth_vda_scaled already complete ($N_SCALED), skipping"
+else
+echo "[5a/5] BSD-anchored depth scaling → $SCALED_DIR"
+SCENE_DIR=$SCENE_DIR MESH_FILE=$MESH $PY - <<'PYEOF'
+import os, glob, cv2, numpy as np, trimesh
+from estimater import *
+from datareader import *
+from tools import *
+set_seed(0); set_logging_format()
+
+SCENE_DIR = os.environ["SCENE_DIR"]
+MESH_PATH = os.environ["MESH_FILE"]
+RGB_DIR   = f"{SCENE_DIR}/rgb"
+DVDA_DIR  = f"{SCENE_DIR}/depth_vda"
+OUT_DIR   = f"{SCENE_DIR}/depth_vda_scaled"
+os.makedirs(OUT_DIR, exist_ok=True)
+
+mesh = trimesh.load(MESH_PATH); mesh.apply_scale(0.001)
+scorer = ScorePredictor(); refiner = PoseRefinePredictor()
+import nvdiffrast.torch as dr
+glctx = dr.RasterizeCudaContext()
+est = FoundationPose(model_pts=mesh.vertices, model_normals=mesh.vertex_normals,
+                     mesh=mesh, scorer=scorer, refiner=refiner,
+                     debug=0, debug_dir="/tmp", glctx=glctx)
+reader = YcbineoatReader(video_dir=SCENE_DIR, shorter_side=None, zfar=np.inf)
+
+# frame 0: BSD on the seed mask → metric Z
+rgb0 = cv2.cvtColor(cv2.imread(f"{RGB_DIR}/000000.png"), cv2.COLOR_BGR2RGB)
+m0   = (cv2.imread(f"{SCENE_DIR}/masks/000000.png", cv2.IMREAD_GRAYSCALE) > 127).astype(bool)
+pose0 = binary_search_depth(est, mesh, rgb0, m0, reader.K, debug=False)
+bsd_z = float(pose0[2, 3])
+d0 = cv2.imread(f"{DVDA_DIR}/000000.png", cv2.IMREAD_UNCHANGED).astype(np.float32) / 1000.0
+vda_z = float(d0[m0].mean()) if m0.any() else 1.0
+scale = bsd_z / vda_z if vda_z > 0 else 1.0
+print(f"BSD z={bsd_z:.3f}  VDA z={vda_z:.3f}  scale={scale:.3f}")
+
+# apply to every frame, save as uint16 mm
+for p in sorted(glob.glob(f"{DVDA_DIR}/*.png")):
+    d = cv2.imread(p, cv2.IMREAD_UNCHANGED).astype(np.float32) / 1000.0
+    d_scaled = (d * scale * 1000.0).clip(0, 65535).astype(np.uint16)
+    cv2.imwrite(f"{OUT_DIR}/{os.path.basename(p)}", d_scaled)
+print(f"Wrote {len(os.listdir(OUT_DIR))} scaled depth PNGs")
+PYEOF
+fi
+
+echo "[5b/5] FoundationPose tracking → $RUN_DIR/$FP_DEBUG_DIR"
 $PY run_demo_bsd_raw_depth.py \
     --mesh_file        $MESH \
     --test_scene_dir   $SCENE_DIR \
-    --pred_depth_dir   $SCENE_DIR/depth_vda \
+    --pred_depth_dir   $SCENE_DIR/depth_vda_scaled \
     --debug_dir        $RUN_DIR/$FP_DEBUG_DIR \
     --est_refine_iter  2 \
     --track_refine_iter 2 \
