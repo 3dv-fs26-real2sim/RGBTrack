@@ -4,12 +4,33 @@
 #SBATCH --output=/work/courses/3dv/team22/RGBTrack/logs/job_arm_mask_edge_%j.out
 #SBATCH --error=/work/courses/3dv/team22/RGBTrack/logs/job_arm_mask_edge_%j.err
 
-# Arm mask via SAM2VP click → edge-refined per-frame flood fill.
+# Arm mask via SAM2VP positive+negative prompts → edge-refined per-frame flood fill.
 # Uses Canny on RGB as the edge barrier (no separate edge dir needed).
-# Usage: sbatch run_job_arm_mask_edge.sh <SCENE> <CLICK_X> <CLICK_Y>
-SCENE=${1:?need scene}
-CX=${2:?need click x}
-CY=${3:?need click y}
+# Negatives are auto-sampled from --neg_mask (typically the existing duck mask).
+#
+# Usage:
+#   sbatch run_job_arm_mask_edge.sh <SCENE> \
+#       --pos "x1,y1 x2,y2 ..." \
+#       [--neg "x,y ..."] \
+#       [--neg_mask /path/to/mask.png] \
+#       [--anchor_frame N]
+SCENE=${1:?need scene}; shift
+POS=""; NEG=""; NEG_MASK=""; ANCHOR=0
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --pos)          POS=$2;          shift 2 ;;
+        --neg)          NEG=$2;          shift 2 ;;
+        --neg_mask)     NEG_MASK=$2;     shift 2 ;;
+        --anchor_frame) ANCHOR=$2;       shift 2 ;;
+        *) echo "Unknown arg: $1"; exit 1 ;;
+    esac
+done
+[ -z "$POS" ] && echo "Need --pos \"x1,y1 x2,y2 ...\"" && exit 1
+# default neg_mask: duck mask at the anchor frame (true duck position at that moment)
+if [ -z "$NEG_MASK" ]; then
+    ANCHOR_PADDED=$(printf "%06d" $ANCHOR)
+    NEG_MASK=/work/courses/3dv/team22/foundationpose/data/$SCENE/masks/${ANCHOR_PADDED}.png
+fi
 
 # Source RGB lives in the team22 data dir for the regular scene
 SCENE_DIR=/work/courses/3dv/team22/foundationpose/data/$SCENE
@@ -29,7 +50,8 @@ export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 cd /work/courses/3dv/team22/RGBTrack
 
-SCENE_DIR=$SCENE_DIR OUT_DIR=$OUT_DIR DBG_DIR=$DBG_DIR CX=$CX CY=$CY \
+SCENE_DIR=$SCENE_DIR OUT_DIR=$OUT_DIR DBG_DIR=$DBG_DIR \
+POS="$POS" NEG="$NEG" NEG_MASK="$NEG_MASK" ANCHOR=$ANCHOR \
 /work/courses/3dv/team22/py310_env/bin/python - <<'PYEOF'
 import os, glob, cv2, torch, numpy as np
 from scipy.ndimage import binary_fill_holes
@@ -38,7 +60,38 @@ from sam2.build_sam import build_sam2_video_predictor
 SCENE_DIR = os.environ["SCENE_DIR"]
 OUT_DIR   = os.environ["OUT_DIR"]
 DBG_DIR   = os.environ["DBG_DIR"]
-cx, cy    = int(os.environ["CX"]), int(os.environ["CY"])
+ANCHOR    = int(os.environ.get("ANCHOR", "0"))
+
+def parse_pts(s):
+    pts = []
+    for tok in s.split():
+        x, y = tok.split(",")
+        pts.append((float(x), float(y)))
+    return pts
+
+pos_pts = parse_pts(os.environ.get("POS", ""))
+neg_pts = parse_pts(os.environ.get("NEG", "")) if os.environ.get("NEG") else []
+
+# Auto-sample negatives from neg_mask (e.g. duck mask)
+NEG_MASK = os.environ.get("NEG_MASK", "")
+if NEG_MASK and os.path.exists(NEG_MASK):
+    nm = cv2.imread(NEG_MASK, cv2.IMREAD_GRAYSCALE)
+    if nm is not None:
+        ys, xs = np.where(nm > 127)
+        if len(xs) > 0:
+            # 5 spread-out negatives: bbox corners + centroid
+            x0,y0,x1,y1 = xs.min(), ys.min(), xs.max(), ys.max()
+            sampled = [(int((x0+x1)/2), int((y0+y1)/2)),
+                       (int(x0+0.25*(x1-x0)), int(y0+0.25*(y1-y0))),
+                       (int(x0+0.75*(x1-x0)), int(y0+0.25*(y1-y0))),
+                       (int(x0+0.25*(x1-x0)), int(y0+0.75*(y1-y0))),
+                       (int(x0+0.75*(x1-x0)), int(y0+0.75*(y1-y0)))]
+            neg_pts.extend(sampled)
+            print(f"Sampled {len(sampled)} negatives from {NEG_MASK}")
+
+all_pts = pos_pts + neg_pts
+all_lbl = [1]*len(pos_pts) + [0]*len(neg_pts)
+print(f"Prompts: {len(pos_pts)} positive, {len(neg_pts)} negative, anchor frame {ANCHOR}")
 
 SAM2_CKPT = "/work/courses/3dv/team22/RGBTrack/segment-anything-2-real-time/sam2.1_hiera_small.pt"
 SAM2_CFG  = "configs/sam2.1/sam2.1_hiera_s.yaml"
@@ -75,10 +128,11 @@ while start < N:
         state = predictor.init_state(video_path=chunk,
                                      offload_video_to_cpu=True, offload_state_to_cpu=True)
         if start == 0:
+            # Anchor prompt at requested frame (within first chunk)
             predictor.add_new_points_or_box(
-                state, frame_idx=0, obj_id=1,
-                points=np.array([[cx, cy]], dtype=np.float32),
-                labels=np.array([1], dtype=np.int32))
+                state, frame_idx=ANCHOR, obj_id=1,
+                points=np.array(all_pts, dtype=np.float32),
+                labels=np.array(all_lbl, dtype=np.int32))
         else:
             seed_name = os.path.splitext(os.path.basename(rgb_pngs[start-1]))[0]
             seed = (cv2.imread(f"{sam_dir}/{seed_name}.png", cv2.IMREAD_GRAYSCALE) > 127)
