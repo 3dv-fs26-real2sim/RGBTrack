@@ -75,7 +75,8 @@ class GoTrackRefiner:
         from utils import net_util
 
         # GoTrackOpts is a NamedTuple — immutable, use _replace.
-        opts = GoTrackOpts()._replace(num_iterations_test=3)
+        # debug=False skips the visualization path (Pillow 10 broke font.getsize).
+        opts = GoTrackOpts()._replace(num_iterations_test=3, debug=False)
         self.model = GoTrack(opts=opts).to(device)
         self.model.eval()
         net_util.load_checkpoint(
@@ -105,7 +106,7 @@ class GoTrackRefiner:
         from utils import structs
 
         # opts is a NamedTuple — rebind to override n_iter for this call.
-        self.model.opts = self.model.opts._replace(num_iterations_test=n_iter)
+        self.model.opts = self.model.opts._replace(num_iterations_test=n_iter, debug=False)
 
         H, W = rgb_uint8.shape[:2]
 
