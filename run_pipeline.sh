@@ -267,15 +267,16 @@ fi
 if ! run_step 5; then
     echo "[5/5] skipped (not in --steps)"
 else
-echo "[5/5] FoundationPose tracking → $RUN_DIR/$FP_DEBUG_DIR"
-$PY run_demo_vda_hand.py \
+echo "[5/5] FoundationPose tracking → $RUN_DIR/$FP_DEBUG_DIR (no_freeze: max-tracking, heavier refine 5/4)"
+$PY run_demo_fp_freeze.py \
     --mesh_file        $MESH \
     --test_scene_dir   $SCENE_DIR \
     --depth_dir        $SCENE_DIR/depth_vda \
     --masks_dir        $SCENE_DIR/masks \
     --debug_dir        $RUN_DIR/$FP_DEBUG_DIR \
-    --est_refine_iter  2 \
-    --track_refine_iter 2 \
+    --est_refine_iter  5 \
+    --track_refine_iter 4 \
+    --no_freeze \
     --debug 2
 fi
 

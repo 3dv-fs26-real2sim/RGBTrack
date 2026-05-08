@@ -68,6 +68,10 @@ if __name__ == "__main__":
     parser.add_argument("--depth_dir_occ",    type=str, default=None)
     parser.add_argument("--metric3d_ckpt",    type=str, default=None)
     parser.add_argument("--depth_pro_ckpt",   type=str, default=None)
+    parser.add_argument("--no_freeze",        action="store_true",
+                        help="Disable rotation freeze (ScoreNet gate + hand-proximity gate). "
+                             "Keep centroid snap, occlusion swap, stuck-reinit and recovery. "
+                             "Use when you intend to apply correction layers later (palm/GoTrack).")
     args = parser.parse_args()
 
     set_logging_format(); set_seed(0)
@@ -183,18 +187,22 @@ if __name__ == "__main__":
             pose = est.track_one(rgb=color, depth=d_scaled, K=reader.K,
                                  iteration=args.track_refine_iter)
 
-            # ScoreNet rotation gate, plus hand-proximity gate when occluded:
-            # rotation is rejected and last_good_R held when either trips.
+            # ScoreNet rotation gate + hand-proximity gate (skipped when --no_freeze).
+            # When skipped: still compute score for logging, but always accept FP rotation.
             score = score_pose(est, color, d_scaled, reader.K)
-            score_low = score < baseline_score * (1.0 - SCORE_DROP_MARGIN)
-            hand_freeze = occluded and hand_close
-            if (score_low or hand_freeze) and last_good_R is not None:
-                pose[:3, :3] = last_good_R
-                n_frozen += 1
-                tag = "FROZEN_HAND" if hand_freeze and not score_low else "FROZEN"
-            else:
+            if args.no_freeze:
                 last_good_R = pose[:3, :3].copy()
                 tag = "OK"
+            else:
+                score_low = score < baseline_score * (1.0 - SCORE_DROP_MARGIN)
+                hand_freeze = occluded and hand_close
+                if (score_low or hand_freeze) and last_good_R is not None:
+                    pose[:3, :3] = last_good_R
+                    n_frozen += 1
+                    tag = "FROZEN_HAND" if hand_freeze and not score_low else "FROZEN"
+                else:
+                    last_good_R = pose[:3, :3].copy()
+                    tag = "OK"
 
             # Occlusion bookkeeping + stuck-while-occluded re-init
             if occluded:
