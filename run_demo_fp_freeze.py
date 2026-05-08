@@ -30,8 +30,8 @@ except ImportError:
     DepthProWrapper = None
 
 # ── Settings ──────────────────────────────────────────────────────────────────
-OCCLUSION_THR      = 0.90   # mask below this fraction of frame0 → occluded
-RECOVERY_THR       = 0.95   # mask above this fraction of frame0 → re-init
+OCCLUSION_THR      = 0.80   # mask below this fraction of frame0 → occluded (was 0.90)
+RECOVERY_THR       = 0.85   # mask above this fraction of frame0 → re-init  (was 0.95)
 SCORE_DROP_MARGIN  = 0.35   # reject rotation if score < baseline * (1 - margin)
 STUCK_OCC_FRAMES   = 30     # occluded streak length to consider re-anchoring
 STUCK_TR_RANGE_M   = 0.005  # if translation range over last STUCK_OCC_FRAMES < 5mm → stuck
