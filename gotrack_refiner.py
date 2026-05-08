@@ -72,8 +72,8 @@ class GoTrackRefiner:
         from model.config import GoTrackOpts
         from utils import net_util
 
-        opts = GoTrackOpts()
-        opts.num_iterations_test = 3
+        # GoTrackOpts is a NamedTuple — immutable, use _replace.
+        opts = GoTrackOpts()._replace(num_iterations_test=3)
         self.model = GoTrack(opts=opts).to(device)
         self.model.eval()
         net_util.load_checkpoint(
@@ -97,7 +97,8 @@ class GoTrackRefiner:
         """Refine a single-frame init pose; returns refined 4x4 cam_from_model."""
         from utils import structs
 
-        self.model.opts.num_iterations_test = n_iter
+        # opts is a NamedTuple — rebind to override n_iter for this call.
+        self.model.opts = self.model.opts._replace(num_iterations_test=n_iter)
 
         H, W = rgb_uint8.shape[:2]
 
