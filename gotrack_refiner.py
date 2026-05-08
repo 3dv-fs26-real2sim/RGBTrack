@@ -56,8 +56,10 @@ class GoTrackRefiner:
         self._models_dir.mkdir(parents=True, exist_ok=True)
         self._ply_path = self._models_dir / f"obj_{obj_id:06d}.ply"
         self._mesh = trimesh.load(mesh_path, force="mesh")
-        if self._mesh.units == "millimeters" or self._mesh.extents.max() > 10:
+        # Heuristic: if mesh extents are large (>1m), assume mm and scale.
+        if float(self._mesh.extents.max()) > 1.0:
             self._mesh.apply_scale(0.001)
+        print(f"mesh extents (m): {self._mesh.extents}")
         self._mesh.export(str(self._ply_path))
 
         # 3. Build minimal stub dataset for set_renderer().
@@ -85,6 +87,11 @@ class GoTrackRefiner:
 
         # 5. Set the renderer (GoTrack uses pyrender).
         self.model.set_renderer(self._stub_dataset)
+
+        # 6. Result_dir is asserted by forward_pipeline; satisfy it with a tmp dir.
+        self.model.result_dir = Path("/tmp/gotrack_results")
+        self.model.result_dir.mkdir(parents=True, exist_ok=True)
+        self.model.result_file_name = "smoke_test"
 
     @torch.no_grad()
     def refine(
