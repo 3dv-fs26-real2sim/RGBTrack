@@ -133,7 +133,9 @@ class _StubDataset:
     """Minimal dataset stub satisfying GoTrack.set_renderer requirements."""
     def __init__(self, models_dir: Path, mesh: trimesh.Trimesh, obj_id: int) -> None:
         self.dp_model = {"model_tpath": str(models_dir / "obj_{obj_id:06d}.ply")}
-        verts = torch.from_numpy(np.asarray(mesh.vertices, dtype=np.float32))
+        # numpy (not torch) — gotrack's approximate_bounding_sphere uses .max(axis=0)
+        # which on torch returns a NamedTuple, not just values.
+        verts = np.asarray(mesh.vertices, dtype=np.float32)
         self.models_vertices = {obj_id: verts}
         self.models = {obj_id: {"diameter": float(np.linalg.norm(mesh.extents))}}
 
