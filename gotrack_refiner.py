@@ -139,27 +139,14 @@ class _StubDataset:
 
 
 def _build_camera(K: np.ndarray, W: int, H: int):
-    """Construct a GoTrack Camera struct.
-
-    GoTrack uses utils/structs.PinholeCamera (or similar). The exact field names
-    must match what utils.poser_util.get_Ts_world_from_cam expects. TODO once
-    checkpoint runs: import the right class and adjust fields.
-    """
-    from utils import structs
-
-    # Best-effort: most BOP toolkits expose a PinholeCamera with f, c, T_world_from_cam.
-    cam_cls = getattr(structs, "PinholeCamera", None)
-    if cam_cls is None:
-        cam_cls = getattr(structs, "Camera")
-
-    f = (float(K[0, 0]), float(K[1, 1]))
-    c = (float(K[0, 2]), float(K[1, 2]))
-    return cam_cls(
-        f=f,
-        c=c,
+    """Construct a GoTrack PinholePlaneCameraModel from a 3×3 K + (W, H)."""
+    from utils.structs import PinholePlaneCameraModel
+    return PinholePlaneCameraModel(
         width=W,
         height=H,
-        T_world_from_cam=np.eye(4, dtype=np.float64),
+        f=(float(K[0, 0]), float(K[1, 1])),
+        c=(float(K[0, 2]), float(K[1, 2])),
+        T_world_from_eye=np.eye(4, dtype=np.float64),
     )
 
 
