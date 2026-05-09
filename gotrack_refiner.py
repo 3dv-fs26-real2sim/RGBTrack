@@ -52,15 +52,19 @@ class GoTrackRefiner:
         sys.path.insert(0, str(Path(gotrack_root) / "external" / "dinov2"))
 
         # 2. Convert mesh to .ply at the BOP-style template path.
-        self._models_dir = Path("/tmp/gotrack_models")
+        # Use a persistent path (not /tmp) since GPU node and login node /tmp differ.
+        self._models_dir = Path("/work/scratch/hudela/gotrack_models")
         self._models_dir.mkdir(parents=True, exist_ok=True)
         self._ply_path = self._models_dir / f"obj_{obj_id:06d}.ply"
         self._mesh = trimesh.load(mesh_path, force="mesh")
         # Heuristic: if mesh extents are large (>1m), assume mm and scale.
         if float(self._mesh.extents.max()) > 1.0:
             self._mesh.apply_scale(0.001)
-        print(f"mesh extents (m): {self._mesh.extents}")
+        print(f"mesh: verts={len(self._mesh.vertices)} faces={len(self._mesh.faces)} "
+              f"extents(m)={self._mesh.extents}")
         self._mesh.export(str(self._ply_path))
+        ply_size = self._ply_path.stat().st_size
+        print(f"ply written: {self._ply_path} ({ply_size/1e6:.1f} MB)")
 
         # 3. Build minimal stub dataset for set_renderer().
         self._stub_dataset = _StubDataset(
@@ -132,6 +136,22 @@ class GoTrackRefiner:
 
         inputs = {"images": images, "objects": objects}
         outputs = self.model.forward_pipeline(inputs, batch_idx=0)
+
+        # DEBUG: dump the rgbs_template + rgbs_query + flow magnitude for the
+        # last iter so we can verify the renderer is producing a visible duck.
+        try:
+            import cv2 as _cv2
+            dbg = Path("/work/scratch/hudela/gotrack_debug")
+            dbg.mkdir(parents=True, exist_ok=True)
+            gi = inputs.get("gotrack_inputs")
+            if gi is not None:
+                tpl = gi.crop_rgbs_template[0].cpu().numpy().transpose(1, 2, 0)
+                qry = gi.crop_rgbs[0].cpu().numpy().transpose(1, 2, 0)
+                _cv2.imwrite(str(dbg / "template.png"), (tpl * 255).clip(0, 255).astype("uint8")[..., ::-1])
+                _cv2.imwrite(str(dbg / "query.png"),    (qry * 255).clip(0, 255).astype("uint8")[..., ::-1])
+                print(f"DEBUG template + query dumped to {dbg}")
+        except Exception as e:
+            print(f"DEBUG dump skipped: {e}")
 
         refined = outputs["objects"].poses_cam_from_model[0].cpu().numpy()
         return refined.astype(np.float64)
