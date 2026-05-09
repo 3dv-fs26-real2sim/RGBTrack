@@ -51,33 +51,33 @@ class GoTrackRefiner:
         sys.path.insert(0, str(Path(gotrack_root) / "external" / "bop_toolkit"))
         sys.path.insert(0, str(Path(gotrack_root) / "external" / "dinov2"))
 
-        # 2. Convert mesh to .ply. The renderer (utils/renderer.py:126) ALWAYS
-        # divides loaded vertices by 1000 (BOP mm→m). So we export the .ply at
-        # mm scale (raw / unscaled) — the renderer's /1000 then yields metres.
-        # However the models_vertices passed via _StubDataset must be in metres
-        # so the bbox-sphere cropping logic works correctly.
+        # 2. GoTrack uses **BOP convention end-to-end: everything in millimetres**.
+        # The renderer at utils/renderer.py:126 divides loaded vertices by 1000.
+        # The renderer at utils/renderer.py:262 divides translation by 1000.
+        # So our entire wrapper must feed mm-scale meshes AND mm-scale pose
+        # translations.
         self._models_dir = Path("/work/scratch/hudela/gotrack_models")
         self._models_dir.mkdir(parents=True, exist_ok=True)
         self._ply_path = self._models_dir / f"obj_{obj_id:06d}.ply"
 
-        mesh_mm = trimesh.load(mesh_path, force="mesh")  # assume mm, don't scale
-        # Heuristic: if extents already <1, mesh is in metres; convert to mm.
-        if float(mesh_mm.extents.max()) < 1.0:
-            mesh_mm.apply_scale(1000.0)
-        print(f"mesh (mm): verts={len(mesh_mm.vertices)} faces={len(mesh_mm.faces)} "
-              f"extents={mesh_mm.extents}")
-        mesh_mm.export(str(self._ply_path))
+        self._mesh_mm = trimesh.load(mesh_path, force="mesh")
+        # Heuristic: if max extent <1, mesh was stored in metres → convert to mm.
+        if float(self._mesh_mm.extents.max()) < 1.0:
+            self._mesh_mm.apply_scale(1000.0)
+        print(f"mesh (mm): verts={len(self._mesh_mm.vertices)} faces={len(self._mesh_mm.faces)} "
+              f"extents={self._mesh_mm.extents}")
+        self._mesh_mm.export(str(self._ply_path))
         ply_size = self._ply_path.stat().st_size
-        print(f"ply written (mm-scale): {self._ply_path} ({ply_size/1e6:.1f} MB)")
-
-        # Metres-scale copy for cropping/bbox logic.
-        self._mesh = mesh_mm.copy()
+        print(f"ply written (mm): {self._ply_path} ({ply_size/1e6:.1f} MB)")
+        # Public mesh (metres) — used only for external visualization, not gotrack.
+        self._mesh = self._mesh_mm.copy()
         self._mesh.apply_scale(0.001)
 
         # 3. Build minimal stub dataset for set_renderer().
+        # Use mm-scale mesh — gotrack expects mm convention.
         self._stub_dataset = _StubDataset(
             models_dir=self._models_dir,
-            mesh=self._mesh,
+            mesh=self._mesh_mm,
             obj_id=obj_id,
         )
 
@@ -132,8 +132,10 @@ class GoTrackRefiner:
             times=torch.tensor([0.0]),
         )
 
-        # Build objects Collection (single object referencing frame 0).
-        T = torch.from_numpy(init_pose_4x4.astype(np.float32)).unsqueeze(0).to(self.device)
+        # Build objects Collection. GoTrack expects pose translations in mm.
+        T_mm = init_pose_4x4.astype(np.float32).copy()
+        T_mm[:3, 3] *= 1000.0
+        T = torch.from_numpy(T_mm).unsqueeze(0).to(self.device)
         objects = structs.Collection(
             labels=torch.tensor([self.obj_id], dtype=torch.long),
             frame_ids=torch.tensor([0], dtype=torch.long),
@@ -170,12 +172,18 @@ class GoTrackRefiner:
         except Exception as e:
             print(f"DEBUG dump skipped: {e}")
 
-        refined = outputs["objects"].poses_cam_from_model[0].cpu().numpy()
-        return refined.astype(np.float64)
+        refined_mm = outputs["objects"].poses_cam_from_model[0].cpu().numpy()
+        # Convert translation back from mm to metres.
+        refined = refined_mm.astype(np.float64).copy()
+        refined[:3, 3] /= 1000.0
+        return refined
 
 
 class _StubDataset:
-    """Minimal dataset stub satisfying GoTrack.set_renderer requirements."""
+    """Minimal dataset stub satisfying GoTrack.set_renderer requirements.
+
+    GoTrack uses mm convention end-to-end — pass an mm-scale mesh.
+    """
     def __init__(self, models_dir: Path, mesh: trimesh.Trimesh, obj_id: int) -> None:
         self.dp_model = {"model_tpath": str(models_dir / "obj_{obj_id:06d}.ply")}
         # numpy (not torch) — gotrack's approximate_bounding_sphere uses .max(axis=0)
