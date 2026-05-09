@@ -51,20 +51,28 @@ class GoTrackRefiner:
         sys.path.insert(0, str(Path(gotrack_root) / "external" / "bop_toolkit"))
         sys.path.insert(0, str(Path(gotrack_root) / "external" / "dinov2"))
 
-        # 2. Convert mesh to .ply at the BOP-style template path.
-        # Use a persistent path (not /tmp) since GPU node and login node /tmp differ.
+        # 2. Convert mesh to .ply. The renderer (utils/renderer.py:126) ALWAYS
+        # divides loaded vertices by 1000 (BOP mm→m). So we export the .ply at
+        # mm scale (raw / unscaled) — the renderer's /1000 then yields metres.
+        # However the models_vertices passed via _StubDataset must be in metres
+        # so the bbox-sphere cropping logic works correctly.
         self._models_dir = Path("/work/scratch/hudela/gotrack_models")
         self._models_dir.mkdir(parents=True, exist_ok=True)
         self._ply_path = self._models_dir / f"obj_{obj_id:06d}.ply"
-        self._mesh = trimesh.load(mesh_path, force="mesh")
-        # Heuristic: if mesh extents are large (>1m), assume mm and scale.
-        if float(self._mesh.extents.max()) > 1.0:
-            self._mesh.apply_scale(0.001)
-        print(f"mesh: verts={len(self._mesh.vertices)} faces={len(self._mesh.faces)} "
-              f"extents(m)={self._mesh.extents}")
-        self._mesh.export(str(self._ply_path))
+
+        mesh_mm = trimesh.load(mesh_path, force="mesh")  # assume mm, don't scale
+        # Heuristic: if extents already <1, mesh is in metres; convert to mm.
+        if float(mesh_mm.extents.max()) < 1.0:
+            mesh_mm.apply_scale(1000.0)
+        print(f"mesh (mm): verts={len(mesh_mm.vertices)} faces={len(mesh_mm.faces)} "
+              f"extents={mesh_mm.extents}")
+        mesh_mm.export(str(self._ply_path))
         ply_size = self._ply_path.stat().st_size
-        print(f"ply written: {self._ply_path} ({ply_size/1e6:.1f} MB)")
+        print(f"ply written (mm-scale): {self._ply_path} ({ply_size/1e6:.1f} MB)")
+
+        # Metres-scale copy for cropping/bbox logic.
+        self._mesh = mesh_mm.copy()
+        self._mesh.apply_scale(0.001)
 
         # 3. Build minimal stub dataset for set_renderer().
         self._stub_dataset = _StubDataset(
