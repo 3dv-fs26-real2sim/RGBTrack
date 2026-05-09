@@ -64,6 +64,8 @@ if __name__ == "__main__":
     p.add_argument("--start", type=int, default=0)
     p.add_argument("--end",   type=int, default=-1, help="-1 = all frames")
     p.add_argument("--n_iter", type=int, default=3)
+    p.add_argument("--rotation_only", action="store_true",
+                   help="Keep init translation, only take refined rotation from GoTrack.")
     p.add_argument("--gotrack_root", default="/work/courses/3dv/team22/gotrack")
     args = p.parse_args()
 
@@ -97,6 +99,8 @@ if __name__ == "__main__":
         init = np.loadtxt(init_path).reshape(4, 4)
 
         refined = refiner.refine(rgb, K, init, n_iter=args.n_iter)
+        if args.rotation_only:
+            refined[:3, 3] = init[:3, 3]   # keep init translation
 
         dt = float(np.linalg.norm(refined[:3,3] - init[:3,3])) * 100.0
         dr = rotation_delta_deg(init[:3,:3], refined[:3,:3])
