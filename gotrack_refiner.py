@@ -30,6 +30,15 @@ import numpy as np
 import torch
 import trimesh
 
+# Pillow 10 removed FreeTypeFont.getsize; gotrack's vis_base_util still uses it.
+# Monkey-patch a backwards-compat stub before any gotrack imports happen.
+from PIL import ImageFont as _ImageFont
+if not hasattr(_ImageFont.FreeTypeFont, "getsize"):
+    def _getsize_compat(self, text, *args, **kwargs):
+        bbox = self.getbbox(text, *args, **kwargs)
+        return (bbox[2] - bbox[0], bbox[3] - bbox[1])
+    _ImageFont.FreeTypeFont.getsize = _getsize_compat
+
 
 class GoTrackRefiner:
     def __init__(
