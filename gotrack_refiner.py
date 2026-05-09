@@ -145,10 +145,19 @@ class GoTrackRefiner:
             dbg.mkdir(parents=True, exist_ok=True)
             gi = inputs.get("gotrack_inputs")
             if gi is not None:
-                tpl = gi.crop_rgbs_template[0].cpu().numpy().transpose(1, 2, 0)
                 qry = gi.crop_rgbs[0].cpu().numpy().transpose(1, 2, 0)
-                _cv2.imwrite(str(dbg / "template.png"), (tpl * 255).clip(0, 255).astype("uint8")[..., ::-1])
-                _cv2.imwrite(str(dbg / "query.png"),    (qry * 255).clip(0, 255).astype("uint8")[..., ::-1])
+                _cv2.imwrite(str(dbg / "query.png"),
+                             (qry * 255).clip(0, 255).astype("uint8")[..., ::-1])
+                tpls = gi.templates
+                # templates is a Collection; rgbs field is [B, 3, H, W]
+                if hasattr(tpls, "rgbs"):
+                    tpl = tpls.rgbs[0].cpu().numpy().transpose(1, 2, 0)
+                    _cv2.imwrite(str(dbg / "template.png"),
+                                 (tpl * 255).clip(0, 255).astype("uint8")[..., ::-1])
+                    print(f"DEBUG: template max={tpl.max():.3f} mean={tpl.mean():.3f}")
+                if hasattr(tpls, "masks"):
+                    msk = tpls.masks[0].cpu().numpy()
+                    print(f"DEBUG: template mask sum={int((msk>0).sum())}px (>0)")
                 print(f"DEBUG template + query dumped to {dbg}")
         except Exception as e:
             print(f"DEBUG dump skipped: {e}")
