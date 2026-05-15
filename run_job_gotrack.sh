@@ -2,7 +2,7 @@
 #SBATCH --account=3dv
 #SBATCH --partition=jobs
 #SBATCH --nodelist=studgpu-node05            # 2080 Ti (gotrack env is cu11, no Blackwell support)
-#SBATCH --time=00:30:00
+#SBATCH --time=02:00:00
 #SBATCH --output=/work/courses/3dv/team22/RGBTrack/logs/gotrack_batch_%j.out
 #SBATCH --error=/work/courses/3dv/team22/RGBTrack/logs/gotrack_batch_%j.err
 
