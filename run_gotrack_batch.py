@@ -67,6 +67,11 @@ if __name__ == "__main__":
     p.add_argument("--rotation_only", action="store_true",
                    help="Keep init translation, only take refined rotation from GoTrack.")
     p.add_argument("--gotrack_root", default="/work/courses/3dv/team22/gotrack")
+    p.add_argument("--mask_dir", default=None,
+                   help="Optional. Per-frame SAM masks. When provided, GoTrack's "
+                        "crop window is anchored on the mask 2D bbox instead of "
+                        "the projected mesh — robust to small rotation errors in "
+                        "the init pose.")
     args = p.parse_args()
 
     scene = Path(args.scene_dir)
@@ -98,7 +103,13 @@ if __name__ == "__main__":
         rgb = cv2.cvtColor(cv2.imread(p_rgb), cv2.COLOR_BGR2RGB)
         init = np.loadtxt(init_path).reshape(4, 4)
 
-        refined = refiner.refine(rgb, K, init, n_iter=args.n_iter)
+        mask = None
+        if args.mask_dir is not None:
+            mp = Path(args.mask_dir) / f"{name}.png"
+            if mp.exists():
+                mask = cv2.imread(str(mp), cv2.IMREAD_GRAYSCALE)
+
+        refined = refiner.refine(rgb, K, init, n_iter=args.n_iter, mask=mask)
         if args.rotation_only:
             refined[:3, 3] = init[:3, 3]   # keep init translation
 

@@ -40,6 +40,7 @@ START=${2:-0}
 END=${3:--1}                 # -1 = all frames
 N_ITER=${4:-3}
 ROT_ONLY=${5:-no}            # pass 'rotation_only' to keep init translation
+MASK_DIR=${6:-}              # optional: SAM mask dir, anchors crop window on mask bbox
 
 . /work/courses/3dv/team22/miniconda3/bin/activate /work/courses/3dv/team22/gotrack_env
 
@@ -52,6 +53,8 @@ export __EGL_VENDOR_LIBRARY_FILENAMES=/usr/share/glvnd/egl_vendor.d/10_nvidia.js
 
 ROT_FLAG=""
 if [ "$ROT_ONLY" = "rotation_only" ]; then ROT_FLAG="--rotation_only"; fi
+MASK_FLAG=""
+if [ -n "$MASK_DIR" ]; then MASK_FLAG="--mask_dir $MASK_DIR"; fi
 
 # Clean previous output so we don't mix runs
 rm -rf /work/scratch/hudela/$SCENE/fp_gotrack
@@ -63,4 +66,4 @@ python run_gotrack_batch.py \
     --start $START \
     --end $END \
     --n_iter $N_ITER \
-    $ROT_FLAG
+    $ROT_FLAG $MASK_FLAG

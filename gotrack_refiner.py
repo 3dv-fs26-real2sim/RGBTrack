@@ -40,6 +40,29 @@ if not hasattr(_ImageFont.FreeTypeFont, "getsize"):
     _ImageFont.FreeTypeFont.getsize = _getsize_compat
 
 
+# Module-level override used to make GoTrack's crop camera anchor on the SAM
+# mask bbox (back-projected to world via init pose Z) instead of the mesh
+# vertices (which shift around when init pose's rotation is slightly off).
+# Format: {"centroid": (3,) ndarray, "radius": float} all in mm (gotrack units).
+# Empty dict = use default mesh-based cropping.
+_SAM_OVERRIDE: dict = {}
+
+
+def _install_sam_crop_patch(gotrack_root: str) -> None:
+    """Monkey-patch utils.crop_generation.approximate_bounding_sphere to honour
+    _SAM_OVERRIDE when set. Call once after gotrack_root is on sys.path."""
+    sys.path.insert(0, gotrack_root)
+    from utils import crop_generation
+    _orig = crop_generation.approximate_bounding_sphere
+
+    def _patched(pts):
+        if _SAM_OVERRIDE:
+            return _SAM_OVERRIDE["centroid"], _SAM_OVERRIDE["radius"]
+        return _orig(pts)
+
+    crop_generation.approximate_bounding_sphere = _patched
+
+
 class GoTrackRefiner:
     def __init__(
         self,
@@ -110,6 +133,11 @@ class GoTrackRefiner:
         # 5. Set the renderer (GoTrack uses pyrender).
         self.model.set_renderer(self._stub_dataset)
 
+        # Install the SAM-mask crop override (no-op until refine() sets the
+        # module global). Done after gotrack imports so utils.crop_generation
+        # is importable.
+        _install_sam_crop_patch(gotrack_root)
+
         # 6. Result_dir is asserted by forward_pipeline; satisfy it with a tmp dir.
         self.model.result_dir = Path("/tmp/gotrack_results")
         self.model.result_dir.mkdir(parents=True, exist_ok=True)
@@ -122,14 +150,44 @@ class GoTrackRefiner:
         K: np.ndarray,                 # 3x3 intrinsics
         init_pose_4x4: np.ndarray,     # 4x4 cam_from_model
         n_iter: int = 3,
+        mask: Optional[np.ndarray] = None,    # H, W uint8 — SAM mask of the object
     ) -> np.ndarray:
-        """Refine a single-frame init pose; returns refined 4x4 cam_from_model."""
+        """Refine a single-frame init pose; returns refined 4x4 cam_from_model.
+
+        If `mask` is given, the GoTrack crop window is anchored on the mask's
+        2D bbox (back-projected via init pose Z) instead of the mesh-projected
+        bbox. Use when init pose's rotation is slightly off — the SAM bbox
+        keeps the duck centred in the cropped query.
+        """
         from utils import structs
 
         # opts is a NamedTuple — rebind to override n_iter for this call.
         self.model.opts = self.model.opts._replace(num_iterations_test=n_iter, debug=False)
 
         H, W = rgb_uint8.shape[:2]
+
+        # Set SAM-bbox override (gotrack units = mm; world = cam at init pose Z).
+        global _SAM_OVERRIDE
+        _SAM_OVERRIDE = {}
+        if mask is not None:
+            m = (mask > 127)
+            if m.sum() > 5:
+                ys, xs = np.where(m)
+                u_min, u_max = float(xs.min()), float(xs.max())
+                v_min, v_max = float(ys.min()), float(ys.max())
+                u_c = (u_min + u_max) / 2.0
+                v_c = (v_min + v_max) / 2.0
+                Z_mm = float(init_pose_4x4[2, 3]) * 1000.0
+                fx, fy, cx, cy = K[0,0], K[1,1], K[0,2], K[1,2]
+                centroid = np.array([
+                    (u_c - cx) * Z_mm / fx,
+                    (v_c - cy) * Z_mm / fy,
+                    Z_mm,
+                ], dtype=np.float64)
+                half_w = (u_max - u_min) / 2.0 * Z_mm / fx
+                half_h = (v_max - v_min) / 2.0 * Z_mm / fy
+                radius = float(np.sqrt(half_w**2 + half_h**2))
+                _SAM_OVERRIDE = {"centroid": centroid, "radius": radius}
 
         # Build images Collection.
         images = structs.Collection(
@@ -154,7 +212,10 @@ class GoTrackRefiner:
         )
 
         inputs = {"images": images, "objects": objects}
-        outputs = self.model.forward_pipeline(inputs, batch_idx=0)
+        try:
+            outputs = self.model.forward_pipeline(inputs, batch_idx=0)
+        finally:
+            _SAM_OVERRIDE.clear()
 
         # DEBUG: dump the rgbs_template + rgbs_query + flow magnitude for the
         # last iter so we can verify the renderer is producing a visible duck.
